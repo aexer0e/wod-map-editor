@@ -32,7 +32,7 @@ export type ToolId =
   | 'terrainLine'
   | 'terrainRect'
   | 'terrainFill'
-  | 'terrainPick'
+  | 'terrainShape'
   | 'infantry'
   | 'tank'
   | 'city'

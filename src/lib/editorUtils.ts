@@ -92,10 +92,46 @@ export function floodFillContext(context: CanvasRenderingContext2D, sx: number, 
 }
 
 export function drawDot(context: CanvasRenderingContext2D, point: { x: number; y: number }, size: number, color: string) {
+  const diameter = Math.max(1, Math.round(size));
+  const left = Math.round(point.x - diameter / 2);
+  const top = Math.round(point.y - diameter / 2);
+  const radius = diameter / 2;
+  const radiusSquared = radius * radius;
   context.fillStyle = color;
-  context.beginPath();
-  context.arc(point.x, point.y, size / 2, 0, Math.PI * 2);
-  context.fill();
+
+  for (let y = 0; y < diameter; y += 1) {
+    for (let x = 0; x < diameter; x += 1) {
+      const dx = x + 0.5 - radius;
+      const dy = y + 0.5 - radius;
+      if (dx * dx + dy * dy <= radiusSquared) {
+        context.fillRect(left + x, top + y, 1, 1);
+      }
+    }
+  }
+}
+
+export function drawCircleOutline(context: CanvasRenderingContext2D, point: { x: number; y: number }, size: number, color: string) {
+  const diameter = Math.max(1, Math.round(size));
+  const left = Math.round(point.x - diameter / 2);
+  const top = Math.round(point.y - diameter / 2);
+  const radius = diameter / 2;
+  const outerRadiusSquared = radius * radius;
+  const innerRadius = Math.max(0, radius - 1);
+  const innerRadiusSquared = innerRadius * innerRadius;
+
+  context.fillStyle = color;
+
+  for (let y = 0; y < diameter; y += 1) {
+    for (let x = 0; x < diameter; x += 1) {
+      const dx = x + 0.5 - radius;
+      const dy = y + 0.5 - radius;
+      const distanceSquared = dx * dx + dy * dy;
+
+      if (distanceSquared <= outerRadiusSquared && distanceSquared >= innerRadiusSquared) {
+        context.fillRect(left + x, top + y, 1, 1);
+      }
+    }
+  }
 }
 
 export function drawSegment(
@@ -105,14 +141,22 @@ export function drawSegment(
   size: number,
   color: string,
 ) {
-  context.strokeStyle = color;
-  context.lineWidth = size;
-  context.lineCap = 'round';
-  context.lineJoin = 'round';
-  context.beginPath();
-  context.moveTo(start.x, start.y);
-  context.lineTo(end.x, end.y);
-  context.stroke();
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const steps = Math.max(Math.abs(deltaX), Math.abs(deltaY), 1);
+
+  for (let index = 0; index <= steps; index += 1) {
+    const t = index / steps;
+    drawDot(
+      context,
+      {
+        x: Math.round(start.x + deltaX * t),
+        y: Math.round(start.y + deltaY * t),
+      },
+      size,
+      color,
+    );
+  }
 }
 
 export function drawRect(
@@ -122,11 +166,91 @@ export function drawRect(
   color: string,
 ) {
   context.fillStyle = color;
-  const x = Math.min(start.x, end.x);
-  const y = Math.min(start.y, end.y);
-  const width = Math.abs(end.x - start.x);
-  const height = Math.abs(end.y - start.y);
+  const x = Math.min(Math.round(start.x), Math.round(end.x));
+  const y = Math.min(Math.round(start.y), Math.round(end.y));
+  const width = Math.abs(Math.round(end.x) - Math.round(start.x)) + 1;
+  const height = Math.abs(Math.round(end.y) - Math.round(start.y)) + 1;
   context.fillRect(x, y, width, height);
+}
+
+function cubicAt(start: number, controlA: number, controlB: number, end: number, t: number) {
+  const inverse = 1 - t;
+  return (
+    inverse * inverse * inverse * start +
+    3 * inverse * inverse * t * controlA +
+    3 * inverse * t * t * controlB +
+    t * t * t * end
+  );
+}
+
+export function sampleClosedBezierShape(points: Point[], samplesPerSegment = 18) {
+  if (points.length < 3) {
+    return [...points];
+  }
+
+  const sampled: Point[] = [];
+
+  for (let index = 0; index < points.length; index += 1) {
+    const p0 = points[(index - 1 + points.length) % points.length];
+    const p1 = points[index];
+    const p2 = points[(index + 1) % points.length];
+    const p3 = points[(index + 2) % points.length];
+
+    const controlA: Point = [
+      p1[0] + (p2[0] - p0[0]) / 6,
+      p1[1] + (p2[1] - p0[1]) / 6,
+    ];
+    const controlB: Point = [
+      p2[0] - (p3[0] - p1[0]) / 6,
+      p2[1] - (p3[1] - p1[1]) / 6,
+    ];
+
+    for (let sample = 0; sample < samplesPerSegment; sample += 1) {
+      const t = sample / samplesPerSegment;
+      sampled.push([
+        Math.round(cubicAt(p1[0], controlA[0], controlB[0], p2[0], t)),
+        Math.round(cubicAt(p1[1], controlA[1], controlB[1], p2[1], t)),
+      ]);
+    }
+  }
+
+  return sampled;
+}
+
+export function fillPolygonPixels(context: CanvasRenderingContext2D, points: Point[], color: string) {
+  if (points.length < 3) {
+    return;
+  }
+
+  const minY = Math.max(0, Math.floor(Math.min(...points.map((point) => point[1]))));
+  const maxY = Math.min(CANVAS_HEIGHT - 1, Math.ceil(Math.max(...points.map((point) => point[1]))));
+
+  context.fillStyle = color;
+
+  for (let y = minY; y <= maxY; y += 1) {
+    const scanY = y + 0.5;
+    const intersections: number[] = [];
+
+    for (let index = 0; index < points.length; index += 1) {
+      const start = points[index];
+      const end = points[(index + 1) % points.length];
+
+      if ((start[1] <= scanY && end[1] > scanY) || (end[1] <= scanY && start[1] > scanY)) {
+        const ratio = (scanY - start[1]) / (end[1] - start[1]);
+        intersections.push(start[0] + (end[0] - start[0]) * ratio);
+      }
+    }
+
+    intersections.sort((left, right) => left - right);
+
+    for (let index = 0; index < intersections.length - 1; index += 2) {
+      const x1 = Math.max(0, Math.ceil(intersections[index]));
+      const x2 = Math.min(CANVAS_WIDTH - 1, Math.floor(intersections[index + 1]));
+      if (x2 >= x1) {
+        context.fillRect(x1, y, x2 - x1 + 1, 1);
+      }
+    }
+  }
 }
 
 export function canvasPointFromEvent(canvas: HTMLCanvasElement, event: { clientX: number; clientY: number }) {

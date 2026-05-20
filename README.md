@@ -20,6 +20,24 @@ Then open the local Vite URL shown in the terminal.
 npm run build
 ```
 
+## Deploy to GitHub Pages
+
+This app is now configured for GitHub Pages as a Vite React site.
+
+1. Push the repository to GitHub.
+2. Make sure your default branch is `main`.
+3. In GitHub, open `Settings > Pages`.
+4. Set `Source` to `GitHub Actions`.
+5. Push to `main`, or run the `Deploy to GitHub Pages` workflow manually from the `Actions` tab.
+
+The workflow builds the app and publishes the `dist/` folder to Pages automatically.
+
+Why this changed from the old static setup:
+
+- The original root `index.html` model worked because everything lived at fixed relative paths.
+- Vite fingerprints JS and CSS into `dist/assets/...`, so GitHub Pages needs the built `dist` output, not the source tree.
+- The Vite `base` setting is now `./`, which keeps asset URLs relative so the app works under a GitHub Pages project path instead of only at the site root.
+
 ## What changed
 
 - React UI with a typed data model and Vite-based build.

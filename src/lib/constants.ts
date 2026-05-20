@@ -12,6 +12,13 @@ export const AUTOSAVE_DELAY_MS = 220;
 export const DEFAULT_TERRAIN_HEX = '#A1C246';
 
 export const TEAM_COLORS = ['blue', 'orange', 'red', 'purple'] as const;
+export const TEAM_DISPLAY_ORDER = [0, 2, 1, 3] as const;
+export const TEAM_LABELS: Record<(typeof TEAM_COLORS)[number], string> = {
+  blue: 'Blue',
+  orange: 'Orange',
+  red: 'Red',
+  purple: 'Purple',
+};
 
 export const TEAM_ACCENTS: Record<(typeof TEAM_COLORS)[number], string> = {
   blue: '#4b8dff',
@@ -19,6 +26,14 @@ export const TEAM_ACCENTS: Record<(typeof TEAM_COLORS)[number], string> = {
   red: '#eb5a58',
   purple: '#b881ff',
 };
+
+export function teamColorForIndex(teamIndex: number, teamCount: number) {
+  if (teamCount === 2 && teamIndex === 1) {
+    return 'red' as const;
+  }
+
+  return TEAM_COLORS[teamIndex % TEAM_COLORS.length];
+}
 
 export const MODE_TEAMS: Record<Mode, number> = {
   '1v1': 2,
@@ -36,6 +51,7 @@ export const TERRAIN_COLORS = [
   { name: 'Plains', hex: '#A1C246' },
   { name: 'Forest', hex: '#388336' },
   { name: 'River', hex: '#279BFF' },
+  { name: 'Snow', hex: '#FFFFFF' },
   { name: 'Mud', hex: '#784B23' },
   { name: 'Sand', hex: '#EEE3B0' },
   { name: 'Hill', hex: '#888A87' },
@@ -50,21 +66,20 @@ export interface ToolDefinition {
   hint: string;
   group: 'terrain' | 'units' | 'objects';
   kind: 'terrain' | 'team' | 'plain' | 'erase';
-  glyph: string;
 }
 
 export const TOOLS: ToolDefinition[] = [
-  { id: 'terrainBrush', label: 'Brush', hint: 'Paint terrain with drag input.', group: 'terrain', kind: 'terrain', glyph: 'BR' },
-  { id: 'terrainLine', label: 'Line', hint: 'Draw snapped terrain strokes.', group: 'terrain', kind: 'terrain', glyph: 'LN' },
-  { id: 'terrainRect', label: 'Rect', hint: 'Block out areas fast.', group: 'terrain', kind: 'terrain', glyph: 'RC' },
-  { id: 'terrainFill', label: 'Fill', hint: 'Flood a contiguous terrain region.', group: 'terrain', kind: 'terrain', glyph: 'FL' },
-  { id: 'terrainPick', label: 'Pick', hint: 'Sample terrain from the map.', group: 'terrain', kind: 'terrain', glyph: 'PK' },
-  { id: 'infantry', label: 'Infantry', hint: 'Place infantry for the selected team.', group: 'units', kind: 'team', glyph: 'IN' },
-  { id: 'tank', label: 'Tank', hint: 'Place tanks for the selected team.', group: 'units', kind: 'team', glyph: 'TK' },
-  { id: 'city', label: 'City', hint: 'Place a neutral city.', group: 'objects', kind: 'plain', glyph: 'CT' },
-  { id: 'capital', label: 'Capital', hint: 'Toggle capital state on a city.', group: 'objects', kind: 'plain', glyph: 'CP' },
-  { id: 'bridge', label: 'Bridge', hint: 'Click two points to span a bridge.', group: 'objects', kind: 'plain', glyph: 'BG' },
-  { id: 'erase', label: 'Erase', hint: 'Remove the nearest placed object.', group: 'objects', kind: 'erase', glyph: 'ER' },
+  { id: 'terrainBrush', label: 'Brush', hint: 'Paint terrain with drag input.', group: 'terrain', kind: 'terrain' },
+  { id: 'terrainLine', label: 'Line', hint: 'Draw thick terrain strokes.', group: 'terrain', kind: 'terrain' },
+  { id: 'terrainRect', label: 'Rect', hint: 'Block out areas fast.', group: 'terrain', kind: 'terrain' },
+  { id: 'terrainFill', label: 'Fill', hint: 'Flood a contiguous terrain region.', group: 'terrain', kind: 'terrain' },
+  { id: 'terrainShape', label: 'Shape', hint: 'Left-click anchors, then right-click to fill a curved shape.', group: 'terrain', kind: 'terrain' },
+  { id: 'bridge', label: 'Bridge', hint: 'Click two points to span a bridge.', group: 'terrain', kind: 'plain' },
+  { id: 'infantry', label: 'Infantry', hint: 'Place infantry for the selected team.', group: 'units', kind: 'team' },
+  { id: 'tank', label: 'Tank', hint: 'Brush over infantry to convert them into tanks.', group: 'units', kind: 'team' },
+  { id: 'city', label: 'City', hint: 'Place a neutral city.', group: 'objects', kind: 'plain' },
+  { id: 'capital', label: 'Capital', hint: 'Brush over cities to turn them into capitals.', group: 'objects', kind: 'plain' },
+  { id: 'erase', label: 'Erase', hint: 'Remove the nearest placed object.', group: 'objects', kind: 'erase' },
 ];
 
 export const TOOL_LOOKUP: Record<ToolId, ToolDefinition> = Object.fromEntries(

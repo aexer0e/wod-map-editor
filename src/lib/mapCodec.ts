@@ -1,5 +1,6 @@
 import pako from 'pako';
 import { CANVAS_HEIGHT, CANVAS_WIDTH, DEFAULT_TERRAIN_HEX, MODE_LABELS, MODE_TEAMS } from './constants';
+import { loadImageFromFile, quantizeCanvasContext } from './editorUtils';
 import type { Bridge, EditorSnapshot, MapData, Mode, Point, StoredMap } from './types';
 
 const MODE_ALIASES: Record<string, Mode> = {
@@ -75,6 +76,47 @@ function createSolidMapSurface(hex = DEFAULT_TERRAIN_HEX) {
   context.fillStyle = hex;
   context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
   return canvas.toDataURL('image/png').split(',')[1] ?? '';
+}
+
+function fitImageCover(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  width: number,
+  height: number,
+) {
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  const scale = Math.max(width / sourceWidth, height / sourceHeight);
+  const drawWidth = sourceWidth * scale;
+  const drawHeight = sourceHeight * scale;
+  const x = (width - drawWidth) / 2;
+  const y = (height - drawHeight) / 2;
+  context.drawImage(image, x, y, drawWidth, drawHeight);
+}
+
+function safeBaseName(name: string) {
+  const trimmed = name.trim();
+  return (trimmed || 'map').replace(/[\\/:*?"<>|]+/g, '_');
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 500);
+}
+
+function blobFromBase64Png(base64: string) {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: 'image/png' });
 }
 
 export function emptyMapData(mode: Mode = '1v1'): MapData {
@@ -201,16 +243,33 @@ export async function readCompressedMap(file: File) {
   return normalizeMapData(JSON.parse(text));
 }
 
+export async function mapSurfaceFromImageFile(file: File) {
+  const image = await loadImageFromFile(file);
+  const canvas = document.createElement('canvas');
+  canvas.width = CANVAS_WIDTH;
+  canvas.height = CANVAS_HEIGHT;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+
+  if (!context) {
+    return '';
+  }
+
+  context.imageSmoothingEnabled = false;
+  context.fillStyle = DEFAULT_TERRAIN_HEX;
+  context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  fitImageCover(context, image, CANVAS_WIDTH, CANVAS_HEIGHT);
+  quantizeCanvasContext(context);
+  return canvas.toDataURL('image/png').split(',')[1] ?? '';
+}
+
 export function downloadMapFile(map: StoredMap) {
-  const blob = new Blob([gzipMap(map.data)], { type: 'application/gzip' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `${map.name || 'map'}.txt`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 500);
+  const baseName = safeBaseName(map.name || 'map');
+  const txtBlob = new Blob([gzipMap(map.data)], { type: 'application/gzip' });
+  triggerBlobDownload(txtBlob, `${baseName}.txt`);
+
+  if (map.data.map_surface) {
+    triggerBlobDownload(blobFromBase64Png(map.data.map_surface), `${baseName}.png`);
+  }
 }
 
 export function base64PngFromCanvas(canvas: HTMLCanvasElement) {

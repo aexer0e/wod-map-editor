@@ -2,7 +2,7 @@ import { startTransition, useEffect, useState } from 'react';
 import { EditorScreen } from './components/EditorScreen';
 import { MapLibrary } from './components/MapLibrary';
 import { uiAssets } from './lib/assets';
-import { createMapRecord, downloadMapFile, readCompressedMap } from './lib/mapCodec';
+import { createMapRecord, downloadMapFile, mapSurfaceFromImageFile, readCompressedMap } from './lib/mapCodec';
 import { mapStore } from './lib/storage';
 import type { StoredMap } from './lib/types';
 
@@ -109,13 +109,99 @@ function ConfirmDialog({ description, open, title, onCancel, onConfirm }: Confir
   );
 }
 
+interface ImportDialogProps {
+  open: boolean;
+  onCancel: () => void;
+  onConfirm: (textFile: File, imageFile: File) => Promise<void>;
+}
+
+function ImportDialog({ open, onCancel, onConfirm }: ImportDialogProps) {
+  const [textFile, setTextFile] = useState<File | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setTextFile(null);
+      setImageFile(null);
+      setSubmitting(false);
+      setError(null);
+    }
+  }, [open]);
+
+  if (!open) {
+    return null;
+  }
+
+  async function handleSubmit() {
+    if (!textFile || !imageFile || submitting) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onConfirm(textFile, imageFile);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Unable to import the selected files.');
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="dialog-scrim" role="presentation">
+      <div aria-modal="true" className="dialog-card import-dialog" role="dialog">
+        <p className="eyebrow">Import map</p>
+        <h3>Upload both files</h3>
+        <p>Choose the exported map TXT file and the matching PNG terrain image, then import them together.</p>
+
+        <div className="import-grid">
+          <label className={`upload-zone ${textFile ? 'filled' : ''}`}>
+            <input
+              accept=".txt,.gz"
+              className="visually-hidden"
+              type="file"
+              onChange={(event) => setTextFile(event.target.files?.[0] ?? null)}
+            />
+            <strong>Map TXT</strong>
+            <span>{textFile ? textFile.name : 'Click to choose the .txt export'}</span>
+          </label>
+
+          <label className={`upload-zone ${imageFile ? 'filled' : ''}`}>
+            <input
+              accept="image/png"
+              className="visually-hidden"
+              type="file"
+              onChange={(event) => setImageFile(event.target.files?.[0] ?? null)}
+            />
+            <strong>Terrain PNG</strong>
+            <span>{imageFile ? imageFile.name : 'Click to choose the .png image'}</span>
+          </label>
+        </div>
+
+        {error && <p className="dialog-error">{error}</p>}
+
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" disabled={!textFile || !imageFile || submitting} type="button" onClick={() => void handleSubmit()}>
+            {submitting ? 'Importing...' : 'Import map'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [maps, setMaps] = useState<StoredMap[]>([]);
   const [loading, setLoading] = useState(true);
   const [screen, setScreen] = useState<Screen>({ kind: 'library' });
-  const [promptMode, setPromptMode] = useState<'create' | 'rename' | null>(null);
-  const [renameTarget, setRenameTarget] = useState<StoredMap | null>(null);
+  const [promptMode, setPromptMode] = useState<'create' | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<StoredMap | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
 
   useEffect(() => {
     const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]') ?? document.createElement('link');
@@ -159,23 +245,6 @@ export default function App() {
     setScreen({ kind: 'editor', mapId: created.id });
   }
 
-  async function handleRenameMap(name: string) {
-    if (!renameTarget) {
-      return;
-    }
-
-    if (!name) {
-      setRenameTarget(null);
-      setPromptMode(null);
-      return;
-    }
-
-    const renamed = await mapStore.put({ ...renameTarget, name });
-    setMaps((current) => upsertMap(current, renamed));
-    setRenameTarget(null);
-    setPromptMode(null);
-  }
-
   async function handleDeleteMap() {
     if (!deleteTarget) {
       return;
@@ -186,49 +255,50 @@ export default function App() {
     setDeleteTarget(null);
   }
 
-  async function handleImport(file: File) {
-    const importedData = await readCompressedMap(file);
-    const name = file.name.replace(/\.(txt|gz)$/i, '') || 'Imported map';
+  async function handleImport(textFile: File, imageFile: File) {
+    const importedData = await readCompressedMap(textFile);
+    const importedSurface = await mapSurfaceFromImageFile(imageFile);
+    const name = textFile.name.replace(/\.(txt|gz)$/i, '') || 'Imported map';
     const imported = await mapStore.put({
       ...createMapRecord(name),
-      data: importedData,
+      data: {
+        ...importedData,
+        map_surface: importedSurface || importedData.map_surface,
+      },
     });
     setMaps((current) => upsertMap(current, imported));
+    setImportDialogOpen(false);
+    setScreen({ kind: 'editor', mapId: imported.id });
   }
 
   const activeMap = screen.kind === 'editor' ? maps.find((map) => map.id === screen.mapId) : undefined;
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div className="brand-block">
-          <img alt="WoD Map Editor icon" src={uiAssets.appIcon} />
-          <div>
-            <p className="eyebrow">War of Dots map workflow</p>
-            <h1>WoD Map Editor</h1>
+      {screen.kind !== 'editor' && (
+        <header className="app-header">
+          <div className="brand-block">
+            <img alt="WoD Map Editor icon" src={uiAssets.appIcon} />
+            <div>
+              <h1>WoD Map Editor</h1>
+            </div>
           </div>
-        </div>
-        <div className="header-note">
-          <span>Prototype rebuilt for stronger state handling, faster terrain input, and a clearer editor flow.</span>
-        </div>
-      </header>
+        </header>
+      )}
 
       <main className="app-main">
         {screen.kind === 'library' && (
           <MapLibrary
             loading={loading}
             maps={maps}
-            onCreate={() => {
-              setPromptMode('create');
-              setRenameTarget(null);
-            }}
+            onCreate={() => setPromptMode('create')}
             onDelete={(map) => setDeleteTarget(map)}
             onDownload={downloadMapFile}
             onEdit={(mapId) => setScreen({ kind: 'editor', mapId })}
-            onImport={handleImport}
-            onRename={(map) => {
-              setRenameTarget(map);
-              setPromptMode('rename');
+            onImport={() => setImportDialogOpen(true)}
+            onRename={async (map) => {
+              const renamed = await mapStore.put(map);
+              setMaps((current) => upsertMap(current, renamed));
             }}
           />
         )}
@@ -246,22 +316,13 @@ export default function App() {
       </main>
 
       <PromptDialog
-        confirmLabel={promptMode === 'rename' ? 'Rename map' : 'Create map'}
-        initialValue={promptMode === 'rename' && renameTarget ? renameTarget.name : 'Untitled map'}
+        confirmLabel="Create map"
+        initialValue="Untitled map"
         open={promptMode !== null}
-        subtitle={promptMode === 'rename' ? 'Pick a clearer label for this battlefield.' : 'Give the new battlefield a working name.'}
-        title={promptMode === 'rename' ? 'Rename map' : 'Create a new map'}
-        onCancel={() => {
-          setPromptMode(null);
-          setRenameTarget(null);
-        }}
-        onConfirm={(value) => {
-          if (promptMode === 'rename') {
-            void handleRenameMap(value);
-            return;
-          }
-          void handleCreateMap(value);
-        }}
+        subtitle="Give the new battlefield a working name."
+        title="Create a new map"
+        onCancel={() => setPromptMode(null)}
+        onConfirm={(value) => void handleCreateMap(value)}
       />
 
       <ConfirmDialog
@@ -270,6 +331,12 @@ export default function App() {
         title="Delete this map?"
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => void handleDeleteMap()}
+      />
+
+      <ImportDialog
+        open={importDialogOpen}
+        onCancel={() => setImportDialogOpen(false)}
+        onConfirm={handleImport}
       />
     </div>
   );
