@@ -208,7 +208,53 @@ body[data-screen='library'] .app-main {
   padding: 0; position: relative; border-radius: var(--radius-sm); overflow: hidden;
   background: #05090c; cursor: pointer; border: 1px solid rgba(255,255,255,0.05);
 }
-.map-thumb img { display: block; width: 100%; aspect-ratio: 16/10; object-fit: cover; }
+.map-thumb-frame {
+  display: block;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/10;
+  overflow: hidden;
+}
+
+.map-thumb-stage {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 100%;
+  min-width: 100%;
+  aspect-ratio: 16/9;
+  transform: translateX(-50%);
+}
+
+.map-thumb-terrain,
+.map-thumb-shade,
+.map-thumb-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.map-thumb-terrain {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.map-thumb-shade {
+  background: rgba(4, 8, 10, 0.08);
+}
+
+.map-thumb-overlay {
+  pointer-events: none;
+}
+
+.map-thumb-sprite {
+  position: absolute;
+  display: block;
+  transform: translate(-50%, -50%);
+  object-fit: contain;
+}
+
 .map-mode-pill {
   position: absolute; left: 10px; bottom: 10px;
   padding: 4px 10px; font-size: 0.72rem; font-weight: 600;
@@ -805,7 +851,49 @@ body[data-screen='library'] .app-main {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
   flex: 0 0 auto;
+}
+
+.selection-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selection-action-bar.floating {
+  position: absolute;
+  z-index: 5;
+  justify-content: center;
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.selection-action-bar.floating.above {
+  transform: translate(-50%, calc(-100% - 10px));
+}
+
+.selection-action-bar.floating.below {
+  transform: translate(-50%, 10px);
+}
+
+.selection-action-bar.floating .secondary-button,
+.selection-action-bar.floating .danger-button,
+.selection-action-bar.floating .ghost-button {
+  background: rgba(8, 13, 17, 0.92);
+  backdrop-filter: blur(16px);
+  border-color: rgba(255,255,255,0.12);
+  box-shadow: 0 12px 24px rgba(0,0,0,0.28);
+}
+
+.selection-action-bar .secondary-button,
+.selection-action-bar .danger-button,
+.selection-action-bar .ghost-button {
+  padding: 8px 12px;
+  font-size: 0.78rem;
 }
 
 .stage-help {

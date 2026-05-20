@@ -65,7 +65,7 @@ export interface ToolDefinition {
   label: string;
   hint: string;
   group: 'terrain' | 'units' | 'objects';
-  kind: 'terrain' | 'team' | 'plain' | 'erase';
+  kind: 'terrain' | 'team' | 'plain' | 'erase' | 'select';
 }
 
 export const TOOLS: ToolDefinition[] = [
@@ -75,6 +75,7 @@ export const TOOLS: ToolDefinition[] = [
   { id: 'terrainFill', label: 'Fill', hint: 'Flood a contiguous terrain region.', group: 'terrain', kind: 'terrain' },
   { id: 'terrainShape', label: 'Shape', hint: 'Left-click anchors, then right-click to fill a curved shape.', group: 'terrain', kind: 'terrain' },
   { id: 'bridge', label: 'Bridge', hint: 'Click two points to span a bridge.', group: 'terrain', kind: 'plain' },
+  { id: 'select', label: 'Select', hint: 'Drag to select units and cities. Shift adds. Ctrl drags only the box.', group: 'units', kind: 'select' },
   { id: 'infantry', label: 'Infantry', hint: 'Place infantry for the selected team.', group: 'units', kind: 'team' },
   { id: 'tank', label: 'Tank', hint: 'Brush over infantry to convert them into tanks.', group: 'units', kind: 'team' },
   { id: 'city', label: 'City', hint: 'Place a neutral city.', group: 'objects', kind: 'plain' },

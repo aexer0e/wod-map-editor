@@ -77,6 +77,29 @@ interface MoveSession {
   working: StoredMap | null;
 }
 
+interface SelectionRect {
+  bottom: number;
+  left: number;
+  right: number;
+  top: number;
+}
+
+type SelectedEntityRef =
+  | { kind: 'infantry' | 'tank'; entityIndex: number; teamIndex: number }
+  | { kind: 'city'; cityIndex: number };
+
+interface SelectionSession {
+  active: boolean;
+  marqueeRect: SelectionRect | null;
+  mode: 'move' | 'select';
+  moved: boolean;
+  operation: 'add' | 'replace' | 'subtract';
+  originMap: StoredMap | null;
+  originRects: SelectionRect[];
+  pointerId: number | null;
+  start: Point | null;
+}
+
 interface ControlHint {
   action: string;
   icon: LucideIcon;
@@ -161,6 +184,152 @@ function isMoveEntityTool(toolId: ToolId) {
 
 function visibleTeamOrder(teamCount: number) {
   return TEAM_DISPLAY_ORDER.filter((index) => index < teamCount);
+}
+
+function createSelectionRect(start: { x: number; y: number } | Point, end: { x: number; y: number } | Point): SelectionRect {
+  const x1 = Array.isArray(start) ? start[0] : start.x;
+  const y1 = Array.isArray(start) ? start[1] : start.y;
+  const x2 = Array.isArray(end) ? end[0] : end.x;
+  const y2 = Array.isArray(end) ? end[1] : end.y;
+
+  return {
+    bottom: Math.max(y1, y2),
+    left: Math.min(x1, x2),
+    right: Math.max(x1, x2),
+    top: Math.min(y1, y2),
+  };
+}
+
+function selectionRectContainsPoint(rect: SelectionRect, x: number, y: number) {
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function selectionRectIsTiny(rect: SelectionRect) {
+  return rect.right - rect.left < 4 && rect.bottom - rect.top < 4;
+}
+
+function offsetSelectionRect(rect: SelectionRect, dx: number, dy: number): SelectionRect {
+  return {
+    bottom: rect.bottom + dy,
+    left: rect.left + dx,
+    right: rect.right + dx,
+    top: rect.top + dy,
+  };
+}
+
+function clampSelectionRectDelta(rect: SelectionRect, dx: number, dy: number) {
+  return {
+    dx: Math.max(-rect.left, Math.min(CANVAS_WIDTH - 1 - rect.right, Math.round(dx))),
+    dy: Math.max(-rect.top, Math.min(CANVAS_HEIGHT - 1 - rect.bottom, Math.round(dy))),
+  };
+}
+
+function offsetSelectionRects(rects: SelectionRect[], dx: number, dy: number) {
+  return rects.map((rect) => offsetSelectionRect(rect, dx, dy));
+}
+
+function clampSelectionRectsDelta(rects: SelectionRect[], dx: number, dy: number) {
+  const bounds = selectionBoundsFromRects(rects);
+  if (!bounds) {
+    return { dx: 0, dy: 0 };
+  }
+
+  return clampSelectionRectDelta(bounds, dx, dy);
+}
+
+function selectionBoundsFromRects(rects: SelectionRect[]) {
+  if (rects.length === 0) {
+    return null;
+  }
+
+  return rects.reduce<SelectionRect>((bounds, rect) => ({
+    bottom: Math.max(bounds.bottom, rect.bottom),
+    left: Math.min(bounds.left, rect.left),
+    right: Math.max(bounds.right, rect.right),
+    top: Math.min(bounds.top, rect.top),
+  }), { ...rects[0] });
+}
+
+function pointInsideSelectionRects(rects: SelectionRect[], x: number, y: number) {
+  return rects.some((rect) => selectionRectContainsPoint(rect, x, y));
+}
+
+function selectionEntityKey(entity: SelectedEntityRef) {
+  if (entity.kind === 'city') {
+    return `city:${entity.cityIndex}`;
+  }
+
+  return `${entity.kind}:${entity.teamIndex}:${entity.entityIndex}`;
+}
+
+function mergeSelectedEntities(current: SelectedEntityRef[], extra: SelectedEntityRef[]) {
+  const seen = new Set(current.map(selectionEntityKey));
+  const merged = [...current];
+
+  for (const entity of extra) {
+    const key = selectionEntityKey(entity);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(entity);
+  }
+
+  return merged;
+}
+
+function subtractSelectedEntities(current: SelectedEntityRef[], removed: SelectedEntityRef[]) {
+  const removedKeys = new Set(removed.map(selectionEntityKey));
+  return current.filter((entity) => !removedKeys.has(selectionEntityKey(entity)));
+}
+
+function subtractRectFromRect(source: SelectionRect, cut: SelectionRect) {
+  const overlapLeft = Math.max(source.left, cut.left);
+  const overlapRight = Math.min(source.right, cut.right);
+  const overlapTop = Math.max(source.top, cut.top);
+  const overlapBottom = Math.min(source.bottom, cut.bottom);
+
+  if (overlapLeft >= overlapRight || overlapTop >= overlapBottom) {
+    return [source];
+  }
+
+  const fragments: SelectionRect[] = [];
+
+  if (source.top < overlapTop) {
+    fragments.push({ top: source.top, bottom: overlapTop, left: source.left, right: source.right });
+  }
+
+  if (overlapBottom < source.bottom) {
+    fragments.push({ top: overlapBottom, bottom: source.bottom, left: source.left, right: source.right });
+  }
+
+  if (source.left < overlapLeft) {
+    fragments.push({ top: overlapTop, bottom: overlapBottom, left: source.left, right: overlapLeft });
+  }
+
+  if (overlapRight < source.right) {
+    fragments.push({ top: overlapTop, bottom: overlapBottom, left: overlapRight, right: source.right });
+  }
+
+  return fragments.filter((rect) => rect.right - rect.left > 1 && rect.bottom - rect.top > 1);
+}
+
+function subtractSelectionRects(current: SelectionRect[], cut: SelectionRect) {
+  return current.flatMap((rect) => subtractRectFromRect(rect, cut));
+}
+
+function emptySelectionSession(): SelectionSession {
+  return {
+    active: false,
+    marqueeRect: null,
+    mode: 'select',
+    moved: false,
+    operation: 'replace',
+    originMap: null,
+    originRects: [],
+    pointerId: null,
+    start: null,
+  };
 }
 
 function hoverTargetKey(target: HoverTarget | null) {
@@ -250,6 +419,13 @@ function ToolIcon({ selectedTeam, teamCount, toolId }: ToolIconProps) {
           <path d="M7 9c1.2 1 2.8 1.5 5 1.5S15.8 10 17 9" fill="none" stroke="currentColor" strokeWidth="2" />
         </svg>
       );
+    case 'select':
+      return (
+        <svg aria-hidden="true" className={svgClassName} viewBox="0 0 24 24">
+          <rect fill="none" height="12" rx="1.4" stroke="currentColor" strokeDasharray="3 2" strokeWidth="1.8" width="14" x="4" y="5" />
+          <path d="m16 14 3.7 5.3 1.3-1.1-3.2-3.9 3.6-.9-6.6-3.2Z" fill="currentColor" />
+        </svg>
+      );
     case 'erase':
       return (
         <svg aria-hidden="true" className={svgClassName} viewBox="0 0 24 24">
@@ -300,6 +476,8 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(initialMap.name);
   const [dockUnitHelpRight, setDockUnitHelpRight] = useState(false);
+  const [selectedEntities, setSelectedEntities] = useState<SelectedEntityRef[]>([]);
+  const [selectionRects, setSelectionRects] = useState<SelectionRect[]>([]);
 
   // mirrors of state for stable handler access (avoids stale closures + extra effects)
   const draftRef = useRef(draft);
@@ -307,11 +485,15 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const selectedTeamRef = useRef(selectedTeam);
   const terrainColorRef = useRef(terrainColor);
   const brushSizeRef = useRef(brushSize);
+  const selectedEntitiesRef = useRef(selectedEntities);
+  const selectionRectsRef = useRef(selectionRects);
   draftRef.current = draft;
   selectedToolRef.current = selectedTool;
   selectedTeamRef.current = selectedTeam;
   terrainColorRef.current = terrainColor;
   brushSizeRef.current = brushSize;
+  selectedEntitiesRef.current = selectedEntities;
+  selectionRectsRef.current = selectionRects;
 
   // canvas refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -354,6 +536,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     target: null,
     working: null,
   });
+  const selectionSessionRef = useRef<SelectionSession>(emptySelectionSession());
 
   // history (in-memory, no base64)
   const historyRef = useRef<HistoryEntry[]>([]);
@@ -366,10 +549,28 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
 
   const counts = useMemo(() => createDraftCounts(draft), [draft]);
   const teamCount = teamsForMode(draft.data.mode);
+  const selectionBounds = useMemo(() => selectionBoundsFromRects(selectionRects), [selectionRects]);
   const canvasStackStyle = useMemo(
     () => ({ '--editor-zoom': String(zoom) } as CSSProperties),
     [zoom],
   );
+  const selectionActionPlacement = selectionBounds && selectionBounds.top > 70 ? 'above' : 'below';
+  const selectionActionStyle = useMemo(() => {
+    if (selectedTool !== 'select' || selectedEntities.length === 0 || !selectionBounds) {
+      return null;
+    }
+
+    const centerX = (selectionBounds.left + selectionBounds.right) / 2;
+    const leftPercent = Math.max(12, Math.min(88, (centerX / CANVAS_WIDTH) * 100));
+    const anchorY = selectionActionPlacement === 'above'
+      ? (selectionBounds.top / CANVAS_HEIGHT) * 100
+      : (selectionBounds.bottom / CANVAS_HEIGHT) * 100;
+
+    return {
+      left: `${leftPercent}%`,
+      top: `${Math.max(3, Math.min(97, anchorY))}%`,
+    } as CSSProperties;
+  }, [selectedEntities.length, selectedTool, selectionActionPlacement, selectionBounds]);
 
   const requestDraw = useCallback(() => {
     if (frameRef.current !== null) return;
@@ -534,8 +735,10 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
         paintSessionRef.current.snapshot = null;
         entityBrushSessionRef.current = { active: false, dirty: false, last: null, pointerId: null, tool: null, working: null };
         moveSessionRef.current = { active: false, moved: false, origin: null, pointerId: null, target: null, working: null };
+        selectionSessionRef.current = emptySelectionSession();
         bridgeStartRef.current = null;
         shapePointsRef.current = [];
+        clearSelection();
         hoverPointRef.current = null;
         sceneDirtyRef.current = true;
         overlayDirtyRef.current = true;
@@ -546,7 +749,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       const k = event.key.toLowerCase();
       const map: Record<string, ToolId> = {
         b: 'terrainBrush', l: 'terrainLine', r: 'terrainRect', f: 'terrainFill', s: 'terrainShape',
-        i: 'infantry', t: 'tank', c: 'city', k: 'capital', g: 'bridge', e: 'erase',
+        q: 'select', i: 'infantry', t: 'tank', c: 'city', k: 'capital', g: 'bridge', e: 'erase',
       };
       if (map[k]) { activateTool(map[k]); return; }
       if (k === '[') setBrushSize((s) => Math.max(1, s - 2));
@@ -583,7 +786,11 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   }, [selectedTeam, teamCount]);
 
   useEffect(() => {
-    if (!isMoveEntityTool(selectedTool)) {
+    if (selectedTool !== 'select' && (selectedEntitiesRef.current.length > 0 || selectionRectsRef.current.length > 0)) {
+      clearSelection();
+    }
+
+    if (!isMoveEntityTool(selectedTool) && selectedTool !== 'select') {
       setDockUnitHelpRight(false);
     }
   }, [selectedTool]);
@@ -706,7 +913,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       return true;
     }
 
-    if (!isMoveEntityTool(tool)) {
+    if (!isMoveEntityTool(tool) && tool !== 'select') {
       return false;
     }
 
@@ -724,6 +931,208 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     }
 
     return false;
+  }
+
+  function selectionEntityPoint(map: StoredMap, entity: SelectedEntityRef): Point | null {
+    if (entity.kind === 'city') {
+      return map.data.cities[entity.cityIndex] ?? null;
+    }
+
+    if (entity.kind === 'infantry') {
+      return map.data.infantry[entity.teamIndex]?.[entity.entityIndex] ?? null;
+    }
+
+    return map.data.tanks[entity.teamIndex]?.[entity.entityIndex] ?? null;
+  }
+
+  function setSelectionEntityPoint(map: StoredMap, entity: SelectedEntityRef, point: Point) {
+    if (entity.kind === 'city') {
+      if (map.data.cities[entity.cityIndex]) {
+        map.data.cities[entity.cityIndex] = point;
+      }
+      return;
+    }
+
+    if (entity.kind === 'infantry') {
+      if (map.data.infantry[entity.teamIndex]?.[entity.entityIndex]) {
+        map.data.infantry[entity.teamIndex][entity.entityIndex] = point;
+      }
+      return;
+    }
+
+    if (map.data.tanks[entity.teamIndex]?.[entity.entityIndex]) {
+      map.data.tanks[entity.teamIndex][entity.entityIndex] = point;
+    }
+  }
+
+  function selectionRectFromEntities(map: StoredMap, entities: SelectedEntityRef[]) {
+    const points = entities
+      .map((entity) => selectionEntityPoint(map, entity))
+      .filter((point): point is Point => point !== null);
+
+    if (points.length === 0) {
+      return null;
+    }
+
+    let left = points[0][0];
+    let right = points[0][0];
+    let top = points[0][1];
+    let bottom = points[0][1];
+
+    for (const [x, y] of points) {
+      if (x < left) left = x;
+      if (x > right) right = x;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+    }
+
+    const padding = 20;
+    return {
+      bottom: Math.min(CANVAS_HEIGHT - 1, bottom + padding),
+      left: Math.max(0, left - padding),
+      right: Math.min(CANVAS_WIDTH - 1, right + padding),
+      top: Math.max(0, top - padding),
+    };
+  }
+
+  function selectedEntityFromHoverTarget(target: HoverTarget | null): SelectedEntityRef | null {
+    if (!target) {
+      return null;
+    }
+
+    if (target.type === 'city' || target.type === 'capital') {
+      return { kind: 'city', cityIndex: target.cityIndex };
+    }
+
+    if (target.type === 'infantry' || target.type === 'tank') {
+      return { kind: target.type, entityIndex: target.entityIndex, teamIndex: target.teamIndex };
+    }
+
+    return null;
+  }
+
+  function selectedEntitiesInRect(map: StoredMap, rect: SelectionRect) {
+    const next: SelectedEntityRef[] = [];
+
+    map.data.infantry.forEach((team, teamIndex) => team.forEach((point, entityIndex) => {
+      if (selectionRectContainsPoint(rect, point[0], point[1])) {
+        next.push({ kind: 'infantry', entityIndex, teamIndex });
+      }
+    }));
+
+    map.data.tanks.forEach((team, teamIndex) => team.forEach((point, entityIndex) => {
+      if (selectionRectContainsPoint(rect, point[0], point[1])) {
+        next.push({ kind: 'tank', entityIndex, teamIndex });
+      }
+    }));
+
+    map.data.cities.forEach((point, cityIndex) => {
+      if (selectionRectContainsPoint(rect, point[0], point[1])) {
+        next.push({ kind: 'city', cityIndex });
+      }
+    });
+
+    return next;
+  }
+
+  function applySelectionState(nextEntities: SelectedEntityRef[], nextRects: SelectionRect[]) {
+    selectedEntitiesRef.current = nextEntities;
+    selectionRectsRef.current = nextRects;
+    setSelectedEntities(nextEntities);
+    setSelectionRects(nextRects);
+    overlayDirtyRef.current = true;
+    requestDraw();
+  }
+
+  function clearSelection() {
+    applySelectionState([], []);
+    selectionSessionRef.current = emptySelectionSession();
+  }
+
+  function drawSelectionOverlay(ctx: CanvasRenderingContext2D) {
+    const capitalSet = new Set(draftRef.current.data.capitals);
+    const marqueeRect = selectionSessionRef.current.active && selectionSessionRef.current.mode === 'select'
+      ? selectionSessionRef.current.marqueeRect
+      : null;
+
+    for (const entity of selectedEntitiesRef.current) {
+      const point = selectionEntityPoint(draftRef.current, entity);
+      if (!point) {
+        continue;
+      }
+
+      const color = entity.kind === 'city'
+        ? (capitalSet.has(entity.cityIndex) ? '#f7ca5d' : '#8ad8ff')
+        : teamAccent(entity.teamIndex, teamCount);
+
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = color;
+      if (entity.kind === 'tank') {
+        ctx.fillRect(point[0] - 12, point[1] - 10, 24, 20);
+      } else {
+        ctx.beginPath();
+        ctx.arc(point[0], point[1], entity.kind === 'city' ? (capitalSet.has(entity.cityIndex) ? 16 : 14) : 13, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      if (entity.kind === 'tank') {
+        ctx.strokeRect(point[0] - 12, point[1] - 10, 24, 20);
+      } else {
+        ctx.beginPath();
+        ctx.arc(point[0], point[1], entity.kind === 'city' ? (capitalSet.has(entity.cityIndex) ? 16 : 14) : 13, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    for (const rect of selectionRectsRef.current) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(138, 216, 255, 0.95)';
+      ctx.fillStyle = 'rgba(138, 216, 255, 0.08)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([7, 5]);
+      ctx.fillRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+      ctx.strokeRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+      ctx.setLineDash([]);
+      for (const [x, y] of [
+        [rect.left, rect.top],
+        [rect.right, rect.top],
+        [rect.left, rect.bottom],
+        [rect.right, rect.bottom],
+      ]) {
+        ctx.fillRect(x - 2, y - 2, 4, 4);
+      }
+      ctx.restore();
+    }
+
+    if (!marqueeRect) {
+      return;
+    }
+
+    ctx.save();
+    ctx.strokeStyle = selectionSessionRef.current.operation === 'subtract' ? 'rgba(239, 107, 102, 0.96)' : 'rgba(138, 216, 255, 0.96)';
+    ctx.fillStyle = selectionSessionRef.current.operation === 'subtract' ? 'rgba(239, 107, 102, 0.10)' : 'rgba(138, 216, 255, 0.08)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([7, 5]);
+    ctx.fillRect(marqueeRect.left, marqueeRect.top, marqueeRect.right - marqueeRect.left, marqueeRect.bottom - marqueeRect.top);
+    ctx.strokeRect(marqueeRect.left, marqueeRect.top, marqueeRect.right - marqueeRect.left, marqueeRect.bottom - marqueeRect.top);
+    ctx.setLineDash([]);
+    for (const [x, y] of [
+      [marqueeRect.left, marqueeRect.top],
+      [marqueeRect.right, marqueeRect.top],
+      [marqueeRect.left, marqueeRect.bottom],
+      [marqueeRect.right, marqueeRect.bottom],
+    ]) {
+      ctx.fillRect(x - 2, y - 2, 4, 4);
+    }
+    ctx.restore();
   }
 
   function drawOverlay() {
@@ -781,6 +1190,10 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       }
     }
 
+    if (tool === 'select' || selectedEntitiesRef.current.length > 0 || selectionSessionRef.current.active) {
+      drawSelectionOverlay(ctx);
+    }
+
     const animateHover = drawHoverHighlight(ctx, hover);
 
     if (hover) {
@@ -792,7 +1205,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
         const size = Math.max(HIT_RADIUS * 2, Math.round(brushSizeRef.current));
         const color = tool === 'tank' ? teamAccent(selectedTeamRef.current, teamCount) : '#f7ca5d';
         drawCircleOutline(ctx, hover, size, color);
-      } else if (tool !== 'bridge') {
+      } else if (tool !== 'bridge' && tool !== 'select') {
         ctx.strokeStyle = 'rgba(255,255,255,0.6)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -924,6 +1337,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     paintSessionRef.current.snapshot = null;
     paintSessionRef.current.active = false;
     entityBrushSessionRef.current = { active: false, dirty: false, last: null, pointerId: null, tool: null, working: null };
+    selectionSessionRef.current = emptySelectionSession();
     sceneDirtyRef.current = true;
     overlayDirtyRef.current = true;
     requestDraw();
@@ -1252,6 +1666,174 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     return false;
   }
 
+  function moveSelectedEntities(map: StoredMap, entities: SelectedEntityRef[], dx: number, dy: number) {
+    let changed = false;
+
+    for (const entity of entities) {
+      const current = selectionEntityPoint(map, entity);
+      if (!current) {
+        continue;
+      }
+
+      const nextPoint: Point = [current[0] + dx, current[1] + dy];
+      if (nextPoint[0] === current[0] && nextPoint[1] === current[1]) {
+        continue;
+      }
+
+      setSelectionEntityPoint(map, entity, nextPoint);
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  function clampSelectionEntityDelta(map: StoredMap, entities: SelectedEntityRef[], dx: number, dy: number) {
+    let minX = CANVAS_WIDTH - 1;
+    let maxX = 0;
+    let minY = CANVAS_HEIGHT - 1;
+    let maxY = 0;
+    let found = false;
+
+    for (const entity of entities) {
+      const point = selectionEntityPoint(map, entity);
+      if (!point) {
+        continue;
+      }
+
+      found = true;
+      if (point[0] < minX) minX = point[0];
+      if (point[0] > maxX) maxX = point[0];
+      if (point[1] < minY) minY = point[1];
+      if (point[1] > maxY) maxY = point[1];
+    }
+
+    if (!found) {
+      return { dx: 0, dy: 0 };
+    }
+
+    return {
+      dx: Math.max(-minX, Math.min(CANVAS_WIDTH - 1 - maxX, Math.round(dx))),
+      dy: Math.max(-minY, Math.min(CANVAS_HEIGHT - 1 - maxY, Math.round(dy))),
+    };
+  }
+
+  function deleteSelectedEntities() {
+    const selected = selectedEntitiesRef.current;
+    if (selected.length === 0) {
+      return;
+    }
+
+    const next = cloneMapRecord(draftRef.current);
+    const infantryByTeam = new Map<number, number[]>();
+    const tanksByTeam = new Map<number, number[]>();
+    const cityIndexes: number[] = [];
+
+    for (const entity of selected) {
+      if (entity.kind === 'city') {
+        cityIndexes.push(entity.cityIndex);
+        continue;
+      }
+
+      const targetMap = entity.kind === 'infantry' ? infantryByTeam : tanksByTeam;
+      const bucket = targetMap.get(entity.teamIndex) ?? [];
+      bucket.push(entity.entityIndex);
+      targetMap.set(entity.teamIndex, bucket);
+    }
+
+    infantryByTeam.forEach((indexes, teamIndex) => {
+      indexes.sort((left, right) => right - left).forEach((index) => next.data.infantry[teamIndex]?.splice(index, 1));
+    });
+
+    tanksByTeam.forEach((indexes, teamIndex) => {
+      indexes.sort((left, right) => right - left).forEach((index) => next.data.tanks[teamIndex]?.splice(index, 1));
+    });
+
+    cityIndexes.sort((left, right) => right - left).forEach((index) => {
+      next.data.cities.splice(index, 1);
+      next.data.capitals = next.data.capitals
+        .filter((capitalIndex) => capitalIndex !== index)
+        .map((capitalIndex) => (capitalIndex > index ? capitalIndex - 1 : capitalIndex));
+    });
+
+    clearSelection();
+    syncHoverTarget(null);
+    commitDraft(next);
+  }
+
+  function spaceSelectedUnitsEvenly() {
+    const selectedUnits = selectedEntitiesRef.current.filter((entity): entity is Extract<SelectedEntityRef, { kind: 'infantry' | 'tank' }> => (
+      entity.kind === 'infantry' || entity.kind === 'tank'
+    ));
+
+    if (selectedUnits.length < 2) {
+      return;
+    }
+
+    const next = cloneMapRecord(draftRef.current);
+    const entries = selectedUnits
+      .map((entity) => ({ entity, point: selectionEntityPoint(next, entity) }))
+      .filter((entry): entry is { entity: Extract<SelectedEntityRef, { kind: 'infantry' | 'tank' }>; point: Point } => entry.point !== null);
+
+    if (entries.length < 2) {
+      return;
+    }
+
+    let startIndex = 0;
+    let endIndex = 1;
+    let furthestDistance = -1;
+
+    for (let left = 0; left < entries.length; left += 1) {
+      for (let right = left + 1; right < entries.length; right += 1) {
+        const deltaX = entries[left].point[0] - entries[right].point[0];
+        const deltaY = entries[left].point[1] - entries[right].point[1];
+        const distance = deltaX * deltaX + deltaY * deltaY;
+        if (distance > furthestDistance) {
+          furthestDistance = distance;
+          startIndex = left;
+          endIndex = right;
+        }
+      }
+    }
+
+    const startEntry = entries[startIndex];
+    const endEntry = entries[endIndex];
+    const axisX = endEntry.point[0] - startEntry.point[0];
+    const axisY = endEntry.point[1] - startEntry.point[1];
+    const axisLengthSquared = Math.max(1, axisX * axisX + axisY * axisY);
+    const remaining = entries
+      .filter((_, index) => index !== startIndex && index !== endIndex)
+      .sort((left, right) => {
+        const leftProjection = ((left.point[0] - startEntry.point[0]) * axisX + (left.point[1] - startEntry.point[1]) * axisY) / axisLengthSquared;
+        const rightProjection = ((right.point[0] - startEntry.point[0]) * axisX + (right.point[1] - startEntry.point[1]) * axisY) / axisLengthSquared;
+        return leftProjection - rightProjection;
+      });
+
+    const ordered = [startEntry, ...remaining, endEntry];
+    let changed = false;
+
+    ordered.forEach((entry, index) => {
+      const t = ordered.length === 1 ? 0 : index / (ordered.length - 1);
+      const nextPoint: Point = [
+        Math.round(startEntry.point[0] + axisX * t),
+        Math.round(startEntry.point[1] + axisY * t),
+      ];
+
+      if (entry.point[0] === nextPoint[0] && entry.point[1] === nextPoint[1]) {
+        return;
+      }
+
+      setSelectionEntityPoint(next, entry.entity, nextPoint);
+      changed = true;
+    });
+
+    if (!changed) {
+      return;
+    }
+
+    commitDraft(next);
+    applySelectionState([...selectedEntitiesRef.current], [...selectionRectsRef.current]);
+  }
+
   function commitShape(points = shapePointsRef.current, confirmPoint?: Point) {
     const tctx = terrainCtxRef.current;
     const pointsToCommit = confirmPoint && points.length === 2 ? [...points, confirmPoint] : points;
@@ -1370,6 +1952,46 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       return;
     }
 
+    if (tool === 'select') {
+      const activeRects = selectionRectsRef.current;
+      const hasSelection = selectedEntitiesRef.current.length > 0 && activeRects.length > 0;
+      const insideSelection = pointInsideSelectionRects(activeRects, point.x, point.y);
+
+      if (hasSelection && insideSelection && !event.shiftKey && !event.ctrlKey) {
+        selectionSessionRef.current = {
+          active: true,
+          marqueeRect: selectionBoundsFromRects(activeRects),
+          mode: 'move',
+          moved: false,
+          operation: 'replace',
+          originMap: cloneMapRecord(draftRef.current),
+          originRects: activeRects.map((rect) => ({ ...rect })),
+          pointerId: event.pointerId,
+          start: [point.x, point.y],
+        };
+        canvas.setPointerCapture(event.pointerId);
+        overlayDirtyRef.current = true;
+        requestDraw();
+        return;
+      }
+
+      selectionSessionRef.current = {
+        active: true,
+        marqueeRect: createSelectionRect(point, point),
+        mode: 'select',
+        moved: false,
+        operation: event.ctrlKey ? 'subtract' : event.shiftKey ? 'add' : 'replace',
+        originMap: null,
+        originRects: activeRects.map((rect) => ({ ...rect })),
+        pointerId: event.pointerId,
+        start: [point.x, point.y],
+      };
+      canvas.setPointerCapture(event.pointerId);
+      overlayDirtyRef.current = true;
+      requestDraw();
+      return;
+    }
+
     if (event.shiftKey && isEntityBrushTool(tool)) {
       const working = cloneMapRecord(draftRef.current);
       const dirty = applyEntityBrushAtPoint(working, tool, point.x, point.y);
@@ -1472,12 +2094,51 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     const tool = selectedToolRef.current;
     const entityBrushSession = entityBrushSessionRef.current;
     const moveSession = moveSessionRef.current;
+    const selectionSession = selectionSessionRef.current;
     const session = paintSessionRef.current;
     const tctx = terrainCtxRef.current;
 
     if (tool === 'terrainShape') {
       requestDraw();
       return;
+    }
+
+    if (tool === 'select' && selectionSession.active && selectionSession.pointerId === event.pointerId && selectionSession.start) {
+      if (selectionSession.mode === 'select') {
+        selectionSession.marqueeRect = createSelectionRect(selectionSession.start, point);
+        selectionSession.moved = true;
+        requestDraw();
+        return;
+      }
+
+      if (selectionSession.mode === 'move' && selectionSession.originMap && selectionSession.originRects.length > 0) {
+        const entityDelta = clampSelectionEntityDelta(
+          selectionSession.originMap,
+          selectedEntitiesRef.current,
+          point.x - selectionSession.start[0],
+          point.y - selectionSession.start[1],
+        );
+        const rectDelta = clampSelectionRectsDelta(
+          selectionSession.originRects,
+          point.x - selectionSession.start[0],
+          point.y - selectionSession.start[1],
+        );
+        const delta = {
+          dx: Math.sign(entityDelta.dx || rectDelta.dx) * Math.min(Math.abs(entityDelta.dx), Math.abs(rectDelta.dx)),
+          dy: Math.sign(entityDelta.dy || rectDelta.dy) * Math.min(Math.abs(entityDelta.dy), Math.abs(rectDelta.dy)),
+        };
+        const next = cloneMapRecord(selectionSession.originMap);
+        const changed = moveSelectedEntities(next, selectedEntitiesRef.current, delta.dx, delta.dy);
+        selectionSession.moved = selectionSession.moved || changed;
+        if (changed) {
+          previewDraft(next);
+        }
+        applySelectionState(
+          [...selectedEntitiesRef.current],
+          offsetSelectionRects(selectionSession.originRects, delta.dx, delta.dy),
+        );
+        return;
+      }
     }
 
     if (moveSession.active && moveSession.pointerId === event.pointerId && moveSession.target && moveSession.working) {
@@ -1532,7 +2193,55 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     const tool = selectedToolRef.current;
     const moveSession = moveSessionRef.current;
     const entityBrushSession = entityBrushSessionRef.current;
+    const selectionSession = selectionSessionRef.current;
     const session = paintSessionRef.current;
+
+    if (tool === 'select' && selectionSession.active && selectionSession.pointerId === event.pointerId) {
+      if (selectionSession.mode === 'select') {
+        const marqueeRect = selectionSession.marqueeRect ?? (selectionSession.start ? createSelectionRect(selectionSession.start, selectionSession.start) : null);
+
+        if (marqueeRect) {
+          let nextSelected = selectedEntitiesInRect(draftRef.current, marqueeRect);
+          if (selectionRectIsTiny(marqueeRect)) {
+            const hoveredEntity = selectedEntityFromHoverTarget(hoverTargetRef.current);
+            nextSelected = hoveredEntity ? [hoveredEntity] : [];
+          }
+          const committedRect = selectionRectIsTiny(marqueeRect)
+            ? selectionRectFromEntities(draftRef.current, nextSelected) ?? marqueeRect
+            : marqueeRect;
+
+          if (selectionSession.operation === 'subtract') {
+            applySelectionState(
+              subtractSelectedEntities(selectedEntitiesRef.current, nextSelected),
+              subtractSelectionRects(selectionSession.originRects, committedRect),
+            );
+          } else {
+            const nextEntities = selectionSession.operation === 'add'
+              ? mergeSelectedEntities(selectedEntitiesRef.current, nextSelected)
+              : nextSelected;
+            const nextRects = selectionSession.operation === 'add'
+              ? [...selectionSession.originRects, committedRect]
+              : nextEntities.length > 0
+                ? [committedRect]
+                : [];
+
+            applySelectionState(nextEntities, nextRects);
+          }
+        } else if (selectionSession.operation === 'replace') {
+          clearSelection();
+        }
+      } else if (selectionSession.mode === 'move') {
+        if (selectionSession.moved) {
+          pushHistory();
+        }
+      }
+
+      selectionSessionRef.current = emptySelectionSession();
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
 
     if (moveSession.active && moveSession.pointerId === event.pointerId) {
       const wasMoved = moveSession.moved;
@@ -1575,7 +2284,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   }
 
   function handlePointerLeave() {
-    if (paintSessionRef.current.active || entityBrushSessionRef.current.active || moveSessionRef.current.active) return;
+    if (paintSessionRef.current.active || entityBrushSessionRef.current.active || moveSessionRef.current.active || selectionSessionRef.current.active) return;
     hoverPointRef.current = null;
     syncHoverTarget(null);
     overlayDirtyRef.current = true;
@@ -1642,7 +2351,8 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const objectTools = TOOLS.filter((t) => t.group === 'objects');
   const orderedTeams = visibleTeamOrder(teamCount);
   const showsBrushSize = isBrushSizedTool(selectedTool);
-  const showsUnitControls = isMoveEntityTool(selectedTool);
+  const showsUnitControls = isMoveEntityTool(selectedTool) || selectedTool === 'select';
+  const selectedUnitCount = selectedEntities.filter((entity) => entity.kind === 'infantry' || entity.kind === 'tank').length;
   const stageContext = useMemo(() => {
     const parts = [TOOL_LOOKUP[selectedTool].hint];
 
@@ -1660,7 +2370,13 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       }
     }
 
-    if (isMoveEntityTool(selectedTool)) {
+    if (selectedTool === 'select') {
+      if (selectedEntities.length > 0) {
+        parts.push(`${selectedEntities.length} selected. Drag inside the box to move them together.`);
+      } else {
+        parts.push('Drag to select. Shift adds more. Ctrl carves out selection.');
+      }
+    } else if (isMoveEntityTool(selectedTool)) {
       parts.push('Left click places. Shift + left drag brushes replacements.');
     } else if (selectedTool === 'erase') {
       parts.push('Click or right-click removes the nearest object.');
@@ -1669,10 +2385,19 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     }
 
     return parts.join(' ');
-  }, [brushSize, selectedTool, shapePointCount, showsBrushSize]);
+  }, [brushSize, selectedEntities.length, selectedTool, shapePointCount, showsBrushSize]);
   const unitControlItems = useMemo<ControlHint[]>(() => {
     if (!showsUnitControls) {
       return [];
+    }
+
+    if (selectedTool === 'select') {
+      return [
+        { id: 'select-drag', icon: MousePointer2, label: 'Left drag', action: 'draws a selection box.', keys: ['LMB'] },
+        { id: 'select-add', icon: Mouse, label: 'Shift + drag', action: 'adds the new box to the selection.', keys: ['Shift', 'LMB'] },
+        { id: 'select-move', icon: MousePointer2, label: 'Drag inside box', action: 'moves the selected units and cities.', keys: ['LMB'] },
+        { id: 'select-carve', icon: Mouse, label: 'Ctrl + drag', action: 'carves that box out of the selection.', keys: ['Ctrl', 'LMB'] },
+      ];
     }
 
     return [
@@ -1680,7 +2405,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       { id: 'unit-drag', icon: MousePointer2, label: 'Left drag', action: 'moves a placed unit or city.', keys: ['LMB'] },
       { id: 'unit-brush', icon: Mouse, label: 'Shift + left drag', action: 'brushes replacements to the selected tool.', keys: ['Shift', 'LMB'] },
     ];
-  }, [showsUnitControls]);
+  }, [selectedTool, showsUnitControls]);
   const helpItems = useMemo<ControlHint[]>(() => {
     const items: ControlHint[] = [
       { id: 'zoom', icon: ZoomIn, label: 'Wheel', action: 'Zoom the map.' },
@@ -1697,9 +2422,18 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       { id: 'redo', icon: Redo2, label: 'Redo', keys: ['Ctrl', 'Y'], action: 'Step forward one edit.' },
       { id: 'brush-brackets', icon: Brackets, label: '[ / ]', action: 'Shrink or grow the brush.' },
       { id: 'teams', icon: Keyboard, label: '1 - 4', action: 'Switch the active team color.' },
-      { id: 'tools', icon: Keyboard, label: 'B L R F S I T C K G E', action: 'Quick-select editor tools.' },
+      { id: 'tools', icon: Keyboard, label: 'Q B L R F S I T C K G E', action: 'Quick-select editor tools.' },
       { id: 'hover', icon: MousePointer2, label: 'Hover', action: 'Preview glow only on targets relevant to the active tool.' },
     ];
+
+    if (selectedTool === 'select') {
+      items.splice(3, 0,
+        { id: 'selection-drag', icon: MousePointer2, label: 'Left drag', action: 'Create a selection box.' },
+        { id: 'selection-add', icon: Mouse, label: 'Shift + drag', keys: ['Shift'], action: 'Add another area to the selection.' },
+        { id: 'selection-move', icon: MousePointer2, label: 'Drag inside box', action: 'Move the selected units and cities together.' },
+        { id: 'selection-box', icon: Mouse, label: 'Ctrl + drag', keys: ['Ctrl'], action: 'Carve an area out of the current selection.' },
+      );
+    }
 
     if (isMoveEntityTool(selectedTool)) {
       items.splice(3, 0, {
@@ -1998,6 +2732,22 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
             </div>
           ) : null}
           <div className="canvas-stack" style={canvasStackStyle}>
+            {selectionActionStyle ? (
+              <div
+                className={`selection-action-bar floating ${selectionActionPlacement}`}
+                style={selectionActionStyle}
+              >
+                <button className="secondary-button" type="button" disabled={selectedUnitCount < 2} onClick={spaceSelectedUnitsEvenly}>
+                  Space units evenly
+                </button>
+                <button className="danger-button" type="button" onClick={deleteSelectedEntities}>
+                  Delete
+                </button>
+                <button className="ghost-button" type="button" onClick={clearSelection}>
+                  Unselect
+                </button>
+              </div>
+            ) : null}
             <canvas ref={canvasRef} className="map-canvas base" onContextMenu={(e) => e.preventDefault()} />
             <canvas
               ref={overlayRef}

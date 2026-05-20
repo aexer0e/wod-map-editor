@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { CANVAS_HEIGHT, CANVAS_WIDTH, TEAM_ACCENTS, teamColorForIndex } from '../lib/constants';
+import { CANVAS_HEIGHT, CANVAS_WIDTH, CAPITAL_SIZE, CITY_SIZE, SPRITE_SIZE, teamColorForIndex } from '../lib/constants';
 import { modeLabel, formatUpdatedAt, teamsForMode } from '../lib/mapCodec';
 import type { StoredMap } from '../lib/types';
-import { uiAssets } from '../lib/assets';
+import { spriteAssets, uiAssets } from '../lib/assets';
 
 interface MapLibraryProps {
   maps: StoredMap[];
@@ -16,74 +16,102 @@ interface MapLibraryProps {
 }
 
 function thumbnailCoordinateX(x: number) {
-  return Math.max(0, Math.min(100, (x / CANVAS_WIDTH) * 100));
+  return Math.max(0, Math.min(CANVAS_WIDTH, x));
 }
 
 function thumbnailCoordinateY(y: number) {
-  return Math.max(0, Math.min(100, (y / CANVAS_HEIGHT) * 100));
+  return Math.max(0, Math.min(CANVAS_HEIGHT, y));
 }
 
-function esc(value: string) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
+function thumbnailPercentX(x: number) {
+  return (thumbnailCoordinateX(x) / CANVAS_WIDTH) * 100;
 }
 
-function thumbnailFor(map: StoredMap) {
+function thumbnailPercentY(y: number) {
+  return (thumbnailCoordinateY(y) / CANVAS_HEIGHT) * 100;
+}
+
+function thumbnailPercentWidth(size: number) {
+  return (size / CANVAS_WIDTH) * 100;
+}
+
+function thumbnailPercentHeight(size: number) {
+  return (size / CANVAS_HEIGHT) * 100;
+}
+
+function MapThumbnail({ map }: { map: StoredMap }) {
   const terrainSource = map.data.map_surface ? `data:image/png;base64,${map.data.map_surface}` : uiAssets.logo;
   const teamCount = teamsForMode(map.data.mode);
   const capitalIndexes = new Set(map.data.capitals);
-  const overlays: string[] = [];
 
-  map.data.infantry.forEach((team, teamIndex) => {
-    const teamColor = teamColorForIndex(teamIndex, teamCount);
-    const fill = TEAM_ACCENTS[teamColor];
-    team.forEach(([x, y]) => {
-      overlays.push(
-        `<circle cx="${thumbnailCoordinateX(x)}" cy="${thumbnailCoordinateY(y)}" r="1.45" fill="${fill}" stroke="rgba(7,10,12,0.85)" stroke-width="0.4" />`,
-      );
-    });
-  });
+  return (
+    <span className="map-thumb-frame">
+      <span className="map-thumb-stage">
+        <img alt={`${map.name} preview`} className="map-thumb-terrain" draggable={false} src={terrainSource} />
+        <span aria-hidden="true" className="map-thumb-shade" />
+        <span aria-hidden="true" className="map-thumb-overlay">
+          {map.data.infantry.flatMap((team, teamIndex) => {
+            const teamColor = teamColorForIndex(teamIndex, teamCount);
+            const sprite = spriteAssets[teamColor].infantry;
+            return team.map(([x, y], unitIndex) => (
+              <img
+                alt=""
+                className="map-thumb-sprite"
+                draggable={false}
+                key={`infantry-${teamIndex}-${unitIndex}`}
+                src={sprite}
+                style={{
+                  height: `${thumbnailPercentHeight(SPRITE_SIZE)}%`,
+                  left: `${thumbnailPercentX(x)}%`,
+                  top: `${thumbnailPercentY(y)}%`,
+                  width: `${thumbnailPercentWidth(SPRITE_SIZE)}%`,
+                }}
+              />
+            ));
+          })}
+          {map.data.tanks.flatMap((team, teamIndex) => {
+            const teamColor = teamColorForIndex(teamIndex, teamCount);
+            const sprite = spriteAssets[teamColor].tank;
+            return team.map(([x, y], unitIndex) => (
+              <img
+                alt=""
+                className="map-thumb-sprite"
+                draggable={false}
+                key={`tank-${teamIndex}-${unitIndex}`}
+                src={sprite}
+                style={{
+                  height: `${thumbnailPercentHeight(SPRITE_SIZE + 4)}%`,
+                  left: `${thumbnailPercentX(x)}%`,
+                  top: `${thumbnailPercentY(y)}%`,
+                  width: `${thumbnailPercentWidth(SPRITE_SIZE + 4)}%`,
+                }}
+              />
+            ));
+          })}
+          {map.data.cities.map(([x, y], cityIndex) => {
+            const isCapital = capitalIndexes.has(cityIndex);
+            const size = isCapital ? CAPITAL_SIZE : CITY_SIZE;
 
-  map.data.tanks.forEach((team, teamIndex) => {
-    const teamColor = teamColorForIndex(teamIndex, teamCount);
-    const fill = TEAM_ACCENTS[teamColor];
-    team.forEach(([x, y]) => {
-      const cx = thumbnailCoordinateX(x);
-      const cy = thumbnailCoordinateY(y);
-      overlays.push(
-        `<rect x="${cx - 1.9}" y="${cy - 1.35}" width="3.8" height="2.7" rx="0.7" fill="${fill}" stroke="rgba(7,10,12,0.85)" stroke-width="0.4" />`,
-      );
-      overlays.push(
-        `<rect x="${cx - 0.45}" y="${cy - 2.2}" width="0.9" height="1.5" rx="0.3" fill="${fill}" stroke="rgba(7,10,12,0.7)" stroke-width="0.25" />`,
-      );
-    });
-  });
-
-  map.data.cities.forEach(([x, y], cityIndex) => {
-    const cx = thumbnailCoordinateX(x);
-    const cy = thumbnailCoordinateY(y);
-    const isCapital = capitalIndexes.has(cityIndex);
-    const radius = isCapital ? 2.15 : 1.8;
-    overlays.push(
-      `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="#fcde00" stroke="rgba(82,55,0,0.9)" stroke-width="0.5" />`,
-    );
-    if (isCapital) {
-      overlays.push(`<circle cx="${cx}" cy="${cy}" r="0.8" fill="#fff6b4" />`);
-    }
-  });
-
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-      <image href="${esc(terrainSource)}" width="100" height="100" preserveAspectRatio="none" />
-      <rect width="100" height="100" fill="rgba(4, 8, 10, 0.08)" />
-      ${overlays.join('')}
-    </svg>
-  `;
-
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+            return (
+              <img
+                alt=""
+                className="map-thumb-sprite"
+                draggable={false}
+                key={`city-${cityIndex}`}
+                src={isCapital ? uiAssets.capital : uiAssets.city}
+                style={{
+                  height: `${thumbnailPercentHeight(size)}%`,
+                  left: `${thumbnailPercentX(x)}%`,
+                  top: `${thumbnailPercentY(y)}%`,
+                  width: `${thumbnailPercentWidth(size)}%`,
+                }}
+              />
+            );
+          })}
+        </span>
+      </span>
+    </span>
+  );
 }
 
 function ActionIcon({ kind }: { kind: 'edit' | 'download' | 'delete' }) {
@@ -178,7 +206,7 @@ export function MapLibrary({
             return (
               <article className="map-card" key={map.id}>
                 <button className="map-thumb" type="button" onClick={() => onEdit(map.id)}>
-                  <img alt={`${map.name} preview`} src={thumbnailFor(map)} />
+                  <MapThumbnail map={map} />
                   <span className="map-mode-pill">{modeLabel(map.data.mode)}</span>
                 </button>
                 <div className="map-card-body">
