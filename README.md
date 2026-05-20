@@ -1,45 +1,54 @@
 # WoD Map Editor
 
-A modern, browser-based map editor for War of Dots 3. No build step, no backend — open `index.html` and go.
+This prototype has been rebuilt as a React + TypeScript app with a Vite toolchain.
+
+The new editor keeps terrain interaction on a dedicated canvas render path so paint input feels faster, uses typed IndexedDB persistence and typed import/export helpers, and locks the editor workspace to the viewport so the mouse wheel can adjust brush size instead of scrolling the page.
 
 ## Run
 
-Open `index.html` in any modern browser. For full functionality (file drag & drop, no CORS gotchas), serve the folder over HTTP, e.g.:
-
 ```powershell
 cd "WoD Map Editor"
-python -m http.server 8080
-# then open http://localhost:8080
+npm install
+npm run dev
 ```
 
-## Features
+Then open the local Vite URL shown in the terminal.
 
-- **Maps menu** — see all your saved maps with thumbnails. Edit, download, rename, or delete each one.
-- **Editor** — drop a background image (auto-scaled to 960×540), then place infantry, tanks, cities, capitals, and bridges per team.
-- **Modes** — 1v1, 2v2, 3v3, FFA. Switching modes resizes the team list (existing units kept).
-- **Import / Export** — round-trips the game's gzipped JSON `.txt` format. Files downloaded here drop straight into your `map_editor/` folder.
-- **Autosave** — to IndexedDB, locally on your machine. Use Download to get the `.txt`.
+## Build
 
-## Controls
+```powershell
+npm run build
+```
 
-- Left-click: place with selected tool
-- Right-click: erase what's under the cursor
-- Eraser tool: same as right-click
-- Capital tool: click a city to toggle its capital flag; click empty space to add a capital city
-- Bridge tool: click two points to draw a bridge segment
+## What changed
+
+- React UI with a typed data model and Vite-based build.
+- Faster editor loop with canvas drawing kept outside React re-render hotspots.
+- Fixed editor workspace with page scrolling disabled while editing.
+- Mouse wheel brush resizing on the map canvas.
+- Cleaner map library with inline create, rename, delete, import, and export flows.
+- Retained compatibility with the original gzipped `.txt` map format.
+
+## Core controls
+
+- Left click places units, cities, capitals, and bridges.
+- Right click removes the nearest placed object.
+- Terrain tools paint directly on the map canvas.
+- Mouse wheel over the map changes terrain brush size.
+- `Ctrl+Z` and `Ctrl+Y` undo and redo.
 
 ## File format
 
-Each map is a gzip-compressed JSON file with this shape:
+Each exported map is still a gzip-compressed JSON payload with this shape:
 
 ```json
 {
   "map_surface": "<base64 PNG, 960x540>",
   "mode": "1v1",
-  "infantry": [ [[x,y], ...], ... ],   // per team
-  "tanks":    [ [[x,y], ...], ... ],   // per team
-  "cities":   [ [x,y], ... ],
-  "capitals": [ 0, 6 ],                 // indices into cities
-  "bridges":  [ [x1,y1,x2,y2], ... ]
+  "infantry": [[[x, y]], [[x, y]]],
+  "tanks": [[[x, y]], [[x, y]]],
+  "cities": [[x, y]],
+  "capitals": [0, 6],
+  "bridges": [[[x1, y1], [x2, y2]]]
 }
 ```
