@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WoD Map Editor</title>
+<link rel="icon" href="assets/WarOfDots_icon.png" />
+<link rel="stylesheet" href="styles.css" />
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="assets/WarOfDots_icon.png" alt="" />
+      <div>
+        <h1>WoD Map Editor</h1>
+        <p class="tag">Design custom War of Dots battlefields</p>
+      </div>
+    </div>
+    <nav id="topnav"></nav>
+  </header>
+
+  <main id="view"></main>
+
+  <!-- Templates -->
+  <template id="tpl-menu">
+    <section class="menu">
+      <div class="menu-head">
+        <div>
+          <h2>Your maps</h2>
+          <p class="muted"><span id="mapCount">0</span> saved</p>
+        </div>
+        <div class="menu-actions">
+          <label class="btn ghost">
+            <input id="importFile" type="file" accept=".txt,.gz" hidden />
+            Import .txt
+          </label>
+          <button id="newMapBtn" class="btn primary">+ New map</button>
+        </div>
+      </div>
+      <div id="mapsGrid" class="grid"></div>
+      <div id="emptyState" class="empty hidden">
+        <img src="assets/logo.png" alt="" />
+        <h3>No maps yet</h3>
+        <p>Create your first map or import an existing one.</p>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-card">
+    <article class="card">
+      <div class="thumb"><img alt="" /></div>
+      <div class="card-body">
+        <h3 class="name"></h3>
+        <p class="meta"></p>
+      </div>
+      <div class="card-actions">
+        <button data-act="edit"     class="btn">Edit</button>
+        <button data-act="download" class="btn">Download</button>
+        <button data-act="rename"   class="btn ghost">Rename</button>
+        <button data-act="delete"   class="btn danger">Delete</button>
+      </div>
+    </article>
+  </template>
+
+  <template id="tpl-editor">
+    <section class="editor">
+      <aside class="palette">
+        <button class="back" id="backBtn">← Back</button>
+        <div class="field">
+          <label>Name</label>
+          <input id="mapName" type="text" />
+        </div>
+        <div class="field">
+          <label>Mode</label>
+          <select id="mapMode">
+            <option value="1v1">1v1 Duel</option>
+            <option value="v3">3P FFA</option>
+            <option value="v4">4P FFA</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Background</label>
+          <div class="bg-actions">
+            <label class="btn ghost block">
+              <input id="bgFile" type="file" accept="image/*" hidden />
+              Upload image
+            </label>
+          </div>
+          <p class="hint">Canvas is 960×540 and uploads are snapped to WoD terrain colors</p>
+        </div>
+
+        <div class="tools">
+          <h4>Tools</h4>
+          <div class="tool-grid" id="toolGrid"></div>
+        </div>
+
+        <div class="terrain-controls" id="terrainControls">
+          <h4>Terrain</h4>
+          <div class="swatches terrain-swatches" id="terrainSwatches"></div>
+          <div class="field terrain-size-field">
+            <label for="terrainSize">Brush Size <span id="terrainSizeValue">8</span>px</label>
+            <input id="terrainSize" type="range" min="1" max="80" value="8" />
+          </div>
+          <p class="hint">Choose a terrain color, then use brush, line, rect, fill, or pick directly on the map.</p>
+        </div>
+
+        <div class="team-picker" id="teamPicker">
+          <h4>Team</h4>
+          <div class="teams" id="teams"></div>
+        </div>
+
+        <div class="counts" id="counts"></div>
+
+        <div class="palette-actions">
+          <div class="hist-row">
+            <button id="undoBtn" class="btn ghost">Undo</button>
+            <button id="redoBtn" class="btn ghost">Redo</button>
+          </div>
+          <button id="downloadBtn" class="btn block">Download</button>
+        </div>
+      </aside>
+
+      <div class="canvas-wrap">
+        <div class="canvas-frame">
+          <canvas id="map" width="960" height="540"></canvas>
+        </div>
+        <p class="hint center">
+          Terrain edits happen on the main map. Use Ctrl+Z and Ctrl+Y for undo and redo. Capitals toggle on cities. Bridges are placed in two clicks.
+        </p>
+      </div>
+    </section>
+  </template>
+
+  <script src="storage.js"></script>
+  <script src="app.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>
