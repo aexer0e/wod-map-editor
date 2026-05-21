@@ -15,7 +15,6 @@ import {
   SPRITE_SIZE,
   TEAM_ACCENTS,
   TEAM_COLORS,
-  TEAM_DISPLAY_ORDER,
   TEAM_LABELS,
   TERRAIN_COLORS,
   TOOLS,
@@ -75,6 +74,17 @@ interface MoveSession {
   pointerId: number | null;
   target: Exclude<HoverTarget, { type: 'terrain' } | { type: 'bridge' }> | null;
   working: StoredMap | null;
+}
+
+interface PanSession {
+  active: boolean;
+  moved: boolean;
+  pointerId: number | null;
+  startClientX: number;
+  startClientY: number;
+  startPanX: number;
+  startPanY: number;
+  trigger: 'middle' | 'space';
 }
 
 interface SelectionRect {
@@ -183,7 +193,21 @@ function isMoveEntityTool(toolId: ToolId) {
 }
 
 function visibleTeamOrder(teamCount: number) {
-  return TEAM_DISPLAY_ORDER.filter((index) => index < teamCount);
+  return Array.from({ length: teamCount }, (_, index) => index);
+}
+
+function clampPan(
+  pan: { x: number; y: number },
+  zoom: number,
+  size: { height: number; width: number },
+) {
+  const maxX = Math.max(size.width / 2, (size.width * (zoom - 1)) / 2);
+  const maxY = Math.max(size.height / 2, (size.height * (zoom - 1)) / 2);
+
+  return {
+    x: Math.max(-maxX, Math.min(maxX, pan.x)),
+    y: Math.max(-maxY, Math.min(maxY, pan.y)),
+  };
 }
 
 function createSelectionRect(start: { x: number; y: number } | Point, end: { x: number; y: number } | Point): SelectionRect {
@@ -467,6 +491,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const [terrainColor, setTerrainColor] = useState(DEFAULT_TERRAIN_HEX);
   const [brushSize, setBrushSize] = useState(DEFAULT_BRUSH_SIZE);
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [expandedPanels, setExpandedPanels] = useState<Record<PanelKey, boolean>>({ map: true, terrain: true, units: true });
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'dirty'>('saved');
@@ -476,6 +501,8 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(initialMap.name);
   const [dockUnitHelpRight, setDockUnitHelpRight] = useState(false);
+  const [isPanDragging, setIsPanDragging] = useState(false);
+  const [isSpacePanActive, setIsSpacePanActive] = useState(false);
   const [selectedEntities, setSelectedEntities] = useState<SelectedEntityRef[]>([]);
   const [selectionRects, setSelectionRects] = useState<SelectionRect[]>([]);
 
@@ -485,6 +512,9 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const selectedTeamRef = useRef(selectedTeam);
   const terrainColorRef = useRef(terrainColor);
   const brushSizeRef = useRef(brushSize);
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  const spacePanActiveRef = useRef(false);
   const selectedEntitiesRef = useRef(selectedEntities);
   const selectionRectsRef = useRef(selectionRects);
   draftRef.current = draft;
@@ -492,6 +522,8 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   selectedTeamRef.current = selectedTeam;
   terrainColorRef.current = terrainColor;
   brushSizeRef.current = brushSize;
+  zoomRef.current = zoom;
+  panRef.current = pan;
   selectedEntitiesRef.current = selectedEntities;
   selectionRectsRef.current = selectionRects;
 
@@ -537,6 +569,16 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     working: null,
   });
   const selectionSessionRef = useRef<SelectionSession>(emptySelectionSession());
+  const panSessionRef = useRef<PanSession>({
+    active: false,
+    moved: false,
+    pointerId: null,
+    startClientX: 0,
+    startClientY: 0,
+    startPanX: 0,
+    startPanY: 0,
+    trigger: 'middle',
+  });
 
   // history (in-memory, no base64)
   const historyRef = useRef<HistoryEntry[]>([]);
@@ -551,8 +593,12 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const teamCount = teamsForMode(draft.data.mode);
   const selectionBounds = useMemo(() => selectionBoundsFromRects(selectionRects), [selectionRects]);
   const canvasStackStyle = useMemo(
-    () => ({ '--editor-zoom': String(zoom) } as CSSProperties),
-    [zoom],
+    () => ({
+      '--editor-pan-x': `${pan.x}px`,
+      '--editor-pan-y': `${pan.y}px`,
+      '--editor-zoom': String(zoom),
+    } as CSSProperties),
+    [pan.x, pan.y, zoom],
   );
   const selectionActionPlacement = selectionBounds && selectionBounds.top > 70 ? 'above' : 'below';
   const selectionActionStyle = useMemo(() => {
@@ -587,6 +633,35 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       }
     });
   }, []);
+
+  const getCanvasMetrics = useCallback(() => {
+    const stage = stageRef.current;
+    const canvas = overlayRef.current;
+    if (!stage || !canvas) {
+      return null;
+    }
+
+    const currentZoom = zoomRef.current;
+    const stageRect = stage.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+
+    return {
+      baseHeight: canvasRect.height / currentZoom,
+      baseWidth: canvasRect.width / currentZoom,
+      stageRect,
+    };
+  }, []);
+
+  const setPanClamped = useCallback((nextPan: { x: number; y: number }, zoomValue = zoomRef.current) => {
+    const metrics = getCanvasMetrics();
+    const clamped = metrics
+      ? clampPan(nextPan, zoomValue, { height: metrics.baseHeight, width: metrics.baseWidth })
+      : nextPan;
+
+    panRef.current = clamped;
+    setPan(clamped);
+    return clamped;
+  }, [getCanvasMetrics]);
 
   // ────────────────────────────────────────────────────────────
   // Init
@@ -684,6 +759,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       };
       sync(canvasRef.current);
       sync(overlayRef.current);
+      setPanClamped(panRef.current);
       sceneDirtyRef.current = true;
       overlayDirtyRef.current = true;
       requestDraw();
@@ -692,7 +768,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     ro.observe(stage);
     update();
     return () => ro.disconnect();
-  }, [requestDraw]);
+  }, [requestDraw, setPanClamped]);
 
   // Native non-passive wheel listener (React synthetic onWheel is passive)
   useEffect(() => {
@@ -707,7 +783,24 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
         );
       } else {
         const step = event.shiftKey ? 0.2 : 0.1;
-        setZoom((current) => clampZoom(current + (event.deltaY < 0 ? step : -step)));
+        const currentZoom = zoomRef.current;
+        const nextZoom = clampZoom(currentZoom + (event.deltaY < 0 ? step : -step));
+        if (nextZoom !== currentZoom) {
+          const metrics = getCanvasMetrics();
+          if (metrics) {
+            const stageCenterX = metrics.stageRect.left + metrics.stageRect.width / 2;
+            const stageCenterY = metrics.stageRect.top + metrics.stageRect.height / 2;
+            const localX = (event.clientX - stageCenterX - panRef.current.x) / currentZoom;
+            const localY = (event.clientY - stageCenterY - panRef.current.y) / currentZoom;
+            const nextPan = {
+              x: event.clientX - stageCenterX - localX * nextZoom,
+              y: event.clientY - stageCenterY - localY * nextZoom,
+            };
+            setPanClamped(nextPan, nextZoom);
+          }
+          zoomRef.current = nextZoom;
+          setZoom(nextZoom);
+        }
       }
       overlayDirtyRef.current = true;
       sceneDirtyRef.current = true;
@@ -715,12 +808,18 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, [requestDraw]);
+  }, [getCanvasMetrics, requestDraw, setPanClamped]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTextInputTarget(event.target)) return;
+      if (event.code === 'Space') {
+        event.preventDefault();
+        spacePanActiveRef.current = true;
+        setIsSpacePanActive(true);
+        return;
+      }
       if ((event.ctrlKey || event.metaKey)) {
         const key = event.key.toLowerCase();
         if (key === 'z' && !event.shiftKey) { event.preventDefault(); handleUndo(); return; }
@@ -728,6 +827,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
         return;
       }
       if (event.key === 'Escape') {
+        setIsPanDragging(false);
         if (moveSessionRef.current.active && moveSessionRef.current.origin) {
           previewDraft(cloneMapRecord(moveSessionRef.current.origin));
         }
@@ -761,8 +861,25 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
         if (team !== undefined) setSelectedTeam(team);
       }
     };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Space') {
+        spacePanActiveRef.current = false;
+        setIsSpacePanActive(false);
+      }
+    };
+    const onBlur = () => {
+      spacePanActiveRef.current = false;
+      setIsSpacePanActive(false);
+      setIsPanDragging(false);
+    };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teamCount]);
 
@@ -784,6 +901,10 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   useEffect(() => {
     if (selectedTeam >= teamCount) setSelectedTeam(0);
   }, [selectedTeam, teamCount]);
+
+  useEffect(() => {
+    setPanClamped(panRef.current);
+  }, [setPanClamped, zoom]);
 
   useEffect(() => {
     if (selectedTool !== 'select' && (selectedEntitiesRef.current.length > 0 || selectionRectsRef.current.length > 0)) {
@@ -1933,8 +2054,39 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (event.button !== 0 && event.button !== 2) return;
+    if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
     const canvas = event.currentTarget;
+    const shouldPanWithSpace = event.button === 0 && spacePanActiveRef.current;
+
+    const startPanSession = (trigger: PanSession['trigger']) => {
+      event.preventDefault();
+      panSessionRef.current = {
+        active: true,
+        moved: false,
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startPanX: panRef.current.x,
+        startPanY: panRef.current.y,
+        trigger,
+      };
+      hoverPointRef.current = null;
+      syncHoverTarget(null);
+      overlayDirtyRef.current = true;
+      requestDraw();
+      canvas.setPointerCapture(event.pointerId);
+    };
+
+    if (event.button === 1) {
+      startPanSession('middle');
+      return;
+    }
+
+    if (shouldPanWithSpace) {
+      startPanSession('space');
+      return;
+    }
+
     const point = pointFromEvent(canvas, event);
     hoverPointRef.current = point;
     const nextHoverTarget = findHoverTarget(point.x, point.y);
@@ -2086,6 +2238,26 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
 
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = event.currentTarget;
+    const panSession = panSessionRef.current;
+
+    if (panSession.active && panSession.pointerId === event.pointerId) {
+      event.preventDefault();
+      const dx = event.clientX - panSession.startClientX;
+      const dy = event.clientY - panSession.startClientY;
+      if (!panSession.moved && Math.hypot(dx, dy) >= 4) {
+        panSession.moved = true;
+      }
+      if (!panSession.moved) {
+        return;
+      }
+      setIsPanDragging(true);
+      setPanClamped({
+        x: panSession.startPanX + dx,
+        y: panSession.startPanY + dy,
+      });
+      return;
+    }
+
     const point = pointFromEvent(canvas, event);
     hoverPointRef.current = point;
     syncHoverTarget(findHoverTarget(point.x, point.y));
@@ -2191,10 +2363,29 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   function handlePointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = event.currentTarget;
     const tool = selectedToolRef.current;
+    setIsPanDragging(false);
+    const panSession = panSessionRef.current;
     const moveSession = moveSessionRef.current;
     const entityBrushSession = entityBrushSessionRef.current;
     const selectionSession = selectionSessionRef.current;
     const session = paintSessionRef.current;
+
+    if (panSession.active && panSession.pointerId === event.pointerId) {
+      panSessionRef.current = {
+        active: false,
+        moved: false,
+        pointerId: null,
+        startClientX: 0,
+        startClientY: 0,
+        startPanX: 0,
+        startPanY: 0,
+        trigger: 'middle',
+      };
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
 
     if (tool === 'select' && selectionSession.active && selectionSession.pointerId === event.pointerId) {
       if (selectionSession.mode === 'select') {
@@ -2284,7 +2475,14 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   }
 
   function handlePointerLeave() {
-    if (paintSessionRef.current.active || entityBrushSessionRef.current.active || moveSessionRef.current.active || selectionSessionRef.current.active) return;
+    if (
+      paintSessionRef.current.active
+      || entityBrushSessionRef.current.active
+      || moveSessionRef.current.active
+      || selectionSessionRef.current.active
+      || panSessionRef.current.active
+    ) return;
+    setIsPanDragging(false);
     hoverPointRef.current = null;
     syncHoverTarget(null);
     overlayDirtyRef.current = true;
@@ -2408,7 +2606,9 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   }, [selectedTool, showsUnitControls]);
   const helpItems = useMemo<ControlHint[]>(() => {
     const items: ControlHint[] = [
-      { id: 'zoom', icon: ZoomIn, label: 'Wheel', action: 'Zoom the map.' },
+      { id: 'zoom', icon: ZoomIn, label: 'Wheel', action: 'Zoom into the area under the cursor.' },
+      { id: 'pan', icon: Mouse, label: 'Middle drag', action: 'Pan around the canvas.' },
+      { id: 'pan-space', icon: Keyboard, label: 'Space + left drag', keys: ['Space', 'LMB'], action: 'Temporarily pan the canvas.' },
       { id: 'brush-size', icon: Mouse, label: 'Ctrl + wheel', keys: ['Ctrl'], action: 'Adjust brush size for brush-based tools.' },
       {
         id: 'erase',
@@ -2751,7 +2951,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
             <canvas ref={canvasRef} className="map-canvas base" onContextMenu={(e) => e.preventDefault()} />
             <canvas
               ref={overlayRef}
-              className="map-canvas overlay"
+              className={`map-canvas overlay ${isSpacePanActive || panSessionRef.current.active ? 'pan-ready' : ''} ${isPanDragging ? 'dragging' : ''}`}
               onContextMenu={(e) => e.preventDefault()}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
