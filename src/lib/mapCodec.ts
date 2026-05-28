@@ -264,11 +264,26 @@ export async function mapSurfaceFromImageFile(file: File) {
 
 export function downloadMapFile(map: StoredMap) {
   const baseName = safeBaseName(map.name || 'map');
-  const txtBlob = new Blob([gzipMap(map.data)], { type: 'application/gzip' });
+  // multiple all coordiantes by 1.75 to match the scale of the original map fil
+  const scaleFactor = 5/3;
+  const scaledMap: StoredMap = {
+    ...map,
+    data: {
+      ...map.data,
+      infantry: map.data.infantry.map((team) => team.map(([x, y]) => [x * scaleFactor, y * scaleFactor] as Point)),
+      tanks: map.data.tanks.map((team) => team.map(([x, y]) => [x * scaleFactor, y * scaleFactor] as Point)),
+      cities: map.data.cities.map(([x, y]) => [x * scaleFactor, y * scaleFactor] as Point),
+      bridges: map.data.bridges.map(([start, end]) => [
+        [start[0] * scaleFactor, start[1] * scaleFactor],
+        [end[0] * scaleFactor, end[1] * scaleFactor],
+      ] as Bridge),
+    },
+  };
+  const txtBlob = new Blob([gzipMap(scaledMap.data)], { type: 'application/gzip' });
   triggerBlobDownload(txtBlob, `${baseName}.txt`);
 
-  if (map.data.map_surface) {
-    triggerBlobDownload(blobFromBase64Png(map.data.map_surface), `${baseName}.png`);
+  if (scaledMap.data.map_surface) {
+    triggerBlobDownload(blobFromBase64Png(scaledMap.data.map_surface), `${baseName}.png`);
   }
 }
 

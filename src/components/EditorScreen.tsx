@@ -42,6 +42,7 @@ import {
   quantizeCanvasContext,
   rgbToHex,
   sampleClosedBezierShape,
+  strokePolygonPixels,
 } from '../lib/editorUtils';
 import type { MapData, Point, StoredMap, ToolId } from '../lib/types';
 
@@ -118,11 +119,23 @@ interface ControlHint {
   label: string;
 }
 
+interface TeamMapSummary {
+  cities: number;
+  fundDelta: number;
+  heavyUnits: number;
+  lightUnits: number;
+  teamIndex: number;
+}
+
 type HoverTarget =
   | { type: 'terrain'; label: string; terrainHex: string }
   | { type: 'bridge'; label: string; removeLabel: string; bridge: [Point, Point]; color: string }
   | { type: 'infantry' | 'tank'; label: string; removeLabel: string; point: Point; color: string; entityIndex: number; teamIndex: number }
   | { type: 'city' | 'capital'; label: string; removeLabel: string; point: Point; color: string; cityIndex: number };
+
+const BRIDGE_COLOR = '#643C0A';
+const BRIDGE_WIDTH = 9;
+const FLOATING_HELP_DISMISS_MS = 5000;
 
 function panelForTool(toolId: ToolId): PanelKey {
   const group = TOOL_LOOKUP[toolId].group;
@@ -158,6 +171,84 @@ function teamAccent(index: number, teamCount: number) {
   return TEAM_ACCENTS[teamColorForIndex(index, teamCount)];
 }
 
+function createTeamMapSummaries(map: StoredMap, teamCount: number): TeamMapSummary[] {
+  const summaries = Array.from({ length: teamCount }, (_, teamIndex) => {
+    const lightUnits = map.data.infantry[teamIndex]?.length ?? 0;
+    const heavyUnits = map.data.tanks[teamIndex]?.length ?? 0;
+
+    return {
+      cities: 0,
+      fundDelta: 0,
+      heavyUnits,
+      lightUnits,
+      teamIndex,
+    };
+  });
+
+  const unitPoints = summaries.map((summary) => [
+    ...(map.data.infantry[summary.teamIndex] ?? []),
+    ...(map.data.tanks[summary.teamIndex] ?? []),
+  ]);
+
+  map.data.cities.forEach(([cityX, cityY]) => {
+    let claimedBy: number | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    unitPoints.forEach((teamUnits, teamIndex) => {
+      teamUnits.forEach(([unitX, unitY]) => {
+        const distance = (unitX - cityX) ** 2 + (unitY - cityY) ** 2;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          claimedBy = teamIndex;
+        }
+      });
+    });
+
+    if (claimedBy !== null) {
+      summaries[claimedBy].cities += 1;
+    }
+  });
+
+  return summaries.map((summary) => ({
+    ...summary,
+    fundDelta: summary.cities * 5 - (summary.lightUnits + summary.heavyUnits),
+  }));
+}
+
+function formatUnitLabel(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatTeamMapSummary(summary: TeamMapSummary) {
+  const parts: string[] = [];
+
+  if (summary.cities > 0) {
+    parts.push(formatUnitLabel(summary.cities, 'City', 'Cities'));
+  }
+
+  if (summary.lightUnits > 0) {
+    parts.push(formatUnitLabel(summary.lightUnits, 'Light Unit', 'Light Units'));
+  }
+
+  if (summary.heavyUnits > 0) {
+    parts.push(formatUnitLabel(summary.heavyUnits, 'Heavy Unit', 'Heavy Units'));
+  }
+
+  if (parts.length === 0) {
+    return '';
+  }
+
+  if (summary.fundDelta > 0) {
+    return `${parts.join(', ')} (▲ ${summary.fundDelta})`;
+  }
+
+  if (summary.fundDelta < 0) {
+    return `${parts.join(', ')} (▼ ${Math.abs(summary.fundDelta)})`;
+  }
+
+  return parts.join(', ');
+}
+
 function createDraftCounts(map: StoredMap) {
   return {
     infantry: map.data.infantry.reduce((c, t) => c + t.length, 0),
@@ -190,6 +281,77 @@ function isEntityBrushTool(toolId: ToolId): toolId is 'infantry' | 'tank' | 'cit
 
 function isMoveEntityTool(toolId: ToolId) {
   return toolId === 'infantry' || toolId === 'tank' || toolId === 'city' || toolId === 'capital';
+}
+
+function toolControlSignature(toolId: ToolId) {
+  if (toolId === 'select') {
+    return 'select';
+  }
+
+  if (isMoveEntityTool(toolId)) {
+    return 'move-entity';
+  }
+
+  return toolId;
+}
+
+function floatingControlItemsForTool(toolId: ToolId): ControlHint[] {
+  if (toolId === 'select') {
+    return [
+      { id: 'select-drag', icon: MousePointer2, label: 'Left drag', action: 'Draws a selection box.', keys: ['LMB'] },
+      { id: 'select-add', icon: Mouse, label: 'Shift + drag', action: 'Adds the new box to the selection.', keys: ['Shift', 'LMB'] },
+      { id: 'select-move', icon: MousePointer2, label: 'Drag inside box', action: 'Moves the selected units and cities.', keys: ['LMB'] },
+      { id: 'select-carve', icon: Mouse, label: 'Ctrl + drag', action: 'Carves that box out of the selection.', keys: ['Ctrl', 'LMB'] },
+    ];
+  }
+
+  if (isMoveEntityTool(toolId)) {
+    return [
+      { id: 'unit-place', icon: MousePointer2, label: 'Left click', action: 'Places the selected unit or city.', keys: ['LMB'] },
+      { id: 'unit-drag', icon: MousePointer2, label: 'Left drag', action: 'Moves a placed unit or city.', keys: ['LMB'] },
+      { id: 'unit-brush', icon: Mouse, label: 'Shift + left drag', action: 'Brushes replacements to the selected tool.', keys: ['Shift', 'LMB'] },
+    ];
+  }
+
+  switch (toolId) {
+    case 'terrainBrush':
+      return [
+        { id: 'brush-paint', icon: MousePointer2, label: 'Left drag', action: 'Paints terrain continuously.', keys: ['LMB'] },
+        { id: 'brush-wheel', icon: Mouse, label: 'Ctrl + wheel', action: 'Adjusts brush size.', keys: ['Ctrl'] },
+        { id: 'brush-brackets', icon: Brackets, label: '[ / ]', action: 'Shrinks or grows the brush.' },
+      ];
+    case 'terrainLine':
+      return [
+        { id: 'line-drag', icon: MousePointer2, label: 'Drag', action: 'Draws a thick terrain line.', keys: ['LMB'] },
+        { id: 'line-wheel', icon: Mouse, label: 'Ctrl + wheel', action: 'Adjusts line thickness.', keys: ['Ctrl'] },
+        { id: 'line-brackets', icon: Brackets, label: '[ / ]', action: 'Shrinks or grows the brush.' },
+      ];
+    case 'terrainRect':
+      return [
+        { id: 'rect-drag', icon: MousePointer2, label: 'Drag', action: 'Blocks out a terrain rectangle.', keys: ['LMB'] },
+      ];
+    case 'terrainFill':
+      return [
+        { id: 'fill-click', icon: MousePointer2, label: 'Left click', action: 'Flood-fills the hovered terrain region.', keys: ['LMB'] },
+      ];
+    case 'terrainShape':
+      return [
+        { id: 'shape-anchor', icon: MousePointer2, label: 'Left click', action: 'Places anchors for a curved terrain shape.', keys: ['LMB'] },
+        { id: 'shape-confirm', icon: MouseRight, label: 'Right click', action: 'Places the last anchor and confirms the shape.' },
+      ];
+    case 'bridge':
+      return [
+        { id: 'bridge-start', icon: MousePointer2, label: 'Left click', action: 'Places the first bridge point.', keys: ['LMB'] },
+        { id: 'bridge-finish', icon: MousePointer2, label: 'Second click', action: 'Places the second point and creates the bridge.' },
+      ];
+    case 'erase':
+      return [
+        { id: 'erase-click', icon: MousePointer2, label: 'Click', action: 'Removes the nearest unit, city, or bridge.', keys: ['LMB'] },
+        { id: 'erase-right', icon: MouseRight, label: 'Right click', action: 'Also removes the nearest object without switching tools.' },
+      ];
+    default:
+      return [];
+  }
 }
 
 function visibleTeamOrder(teamCount: number) {
@@ -490,6 +652,8 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const [selectedTeam, setSelectedTeam] = useState(0);
   const [terrainColor, setTerrainColor] = useState(DEFAULT_TERRAIN_HEX);
   const [brushSize, setBrushSize] = useState(DEFAULT_BRUSH_SIZE);
+  const [terrainRectFilled, setTerrainRectFilled] = useState(true);
+  const [terrainShapeFilled, setTerrainShapeFilled] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [expandedPanels, setExpandedPanels] = useState<Record<PanelKey, boolean>>({ map: true, terrain: true, units: true });
@@ -501,6 +665,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(initialMap.name);
   const [dockUnitHelpRight, setDockUnitHelpRight] = useState(false);
+  const [showFloatingControls, setShowFloatingControls] = useState(true);
   const [isPanDragging, setIsPanDragging] = useState(false);
   const [isSpacePanActive, setIsSpacePanActive] = useState(false);
   const [selectedEntities, setSelectedEntities] = useState<SelectedEntityRef[]>([]);
@@ -586,6 +751,8 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
 
   // autosave
   const autosaveTimerRef = useRef<number | null>(null);
+  const floatingControlsTimerRef = useRef<number | null>(null);
+  const lastToolControlSignatureRef = useRef<string | null>(null);
   const dirtyForAutosaveRef = useRef(false);
   const mountedRef = useRef(true);
 
@@ -644,10 +811,12 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     const currentZoom = zoomRef.current;
     const stageRect = stage.getBoundingClientRect();
     const canvasRect = canvas.getBoundingClientRect();
+    const baseWidth = canvas.clientWidth || canvasRect.width / currentZoom;
+    const baseHeight = canvas.clientHeight || canvasRect.height / currentZoom;
 
     return {
-      baseHeight: canvasRect.height / currentZoom,
-      baseWidth: canvasRect.width / currentZoom,
+      baseHeight,
+      baseWidth,
       stageRect,
     };
   }, []);
@@ -719,6 +888,10 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       if (autosaveTimerRef.current !== null) {
         clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = null;
+      }
+      if (floatingControlsTimerRef.current !== null) {
+        clearTimeout(floatingControlsTimerRef.current);
+        floatingControlsTimerRef.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -910,10 +1083,34 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     if (selectedTool !== 'select' && (selectedEntitiesRef.current.length > 0 || selectionRectsRef.current.length > 0)) {
       clearSelection();
     }
+  }, [selectedTool]);
 
-    if (!isMoveEntityTool(selectedTool) && selectedTool !== 'select') {
+  useEffect(() => {
+    if (!showFloatingControls) {
       setDockUnitHelpRight(false);
     }
+  }, [showFloatingControls]);
+
+  useEffect(() => {
+    const nextSignature = toolControlSignature(selectedTool);
+    const shouldRedisplay = lastToolControlSignatureRef.current !== nextSignature;
+    lastToolControlSignatureRef.current = nextSignature;
+
+    if (!shouldRedisplay) {
+      return;
+    }
+
+    if (floatingControlsTimerRef.current !== null) {
+      clearTimeout(floatingControlsTimerRef.current);
+    }
+
+    setShowFloatingControls(true);
+    floatingControlsTimerRef.current = window.setTimeout(() => {
+      floatingControlsTimerRef.current = null;
+      if (mountedRef.current) {
+        setShowFloatingControls(false);
+      }
+    }, FLOATING_HELP_DISMISS_MS);
   }, [selectedTool]);
 
   // ────────────────────────────────────────────────────────────
@@ -937,9 +1134,10 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     disableSmoothing(ctx);
 
     // Bridges
-    ctx.strokeStyle = '#e1b265';
-    ctx.lineWidth = 4;
-    ctx.lineCap = 'round';
+    ctx.strokeStyle = BRIDGE_COLOR;
+    ctx.lineWidth = BRIDGE_WIDTH;
+    ctx.lineCap = 'square';
+    ctx.lineJoin = 'miter';
     for (const [[x1, y1], [x2, y2]] of draftRef.current.data.bridges) {
       ctx.beginPath();
       ctx.moveTo(x1, y1);
@@ -1022,7 +1220,9 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       }
       ctx.save();
       ctx.strokeStyle = target.color;
-      ctx.lineWidth = 4 + pulse * 2;
+      ctx.lineWidth = BRIDGE_WIDTH + pulse * 1.5;
+      ctx.lineCap = 'square';
+      ctx.lineJoin = 'miter';
       ctx.shadowColor = target.color;
       ctx.shadowBlur = 12 + pulse * 16;
       ctx.globalAlpha = 0.95;
@@ -1274,13 +1474,13 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     const shapePoints = shapePointsRef.current;
 
     if (tool === 'bridge' && bridgeStartRef.current) {
-      ctx.fillStyle = '#e9c786';
-      ctx.beginPath();
-      ctx.arc(bridgeStartRef.current[0], bridgeStartRef.current[1], 4, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillStyle = BRIDGE_COLOR;
+      ctx.fillRect(bridgeStartRef.current[0] - 4, bridgeStartRef.current[1] - 4, 8, 8);
       if (hover) {
-        ctx.strokeStyle = '#e1b265';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = BRIDGE_COLOR;
+        ctx.lineWidth = Math.max(2, BRIDGE_WIDTH - 2);
+        ctx.lineCap = 'square';
+        ctx.lineJoin = 'miter';
         ctx.setLineDash([8, 6]);
         ctx.beginPath();
         ctx.moveTo(bridgeStartRef.current[0], bridgeStartRef.current[1]);
@@ -1318,15 +1518,11 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     const animateHover = drawHoverHighlight(ctx, hover);
 
     if (hover) {
-      if (tool === 'terrainBrush' || tool === 'terrainLine') {
-        const color = terrainColorRef.current;
-        const size = Math.max(1, Math.round(brushSizeRef.current));
-        drawCircleOutline(ctx, hover, size, color);
-      } else if (tool === 'tank' || tool === 'capital') {
+      if (tool === 'tank' || tool === 'capital') {
         const size = Math.max(HIT_RADIUS * 2, Math.round(brushSizeRef.current));
         const color = tool === 'tank' ? teamAccent(selectedTeamRef.current, teamCount) : '#f7ca5d';
         drawCircleOutline(ctx, hover, size, color);
-      } else if (tool !== 'bridge' && tool !== 'select') {
+      } else if (tool !== 'bridge' && tool !== 'select' && tool !== 'terrainBrush' && tool !== 'terrainLine') {
         ctx.strokeStyle = 'rgba(255,255,255,0.6)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -1566,7 +1762,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
             label: 'Bridge',
             removeLabel: 'bridge',
             bridge,
-            color: '#e9c786',
+            color: BRIDGE_COLOR,
           },
         });
       }
@@ -1963,7 +2159,11 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
     }
 
     const sampled = sampleClosedBezierShape(pointsToCommit);
-    fillPolygonPixels(tctx, sampled, terrainColorRef.current);
+    if (terrainShapeFilled) {
+      fillPolygonPixels(tctx, sampled, terrainColorRef.current);
+    } else {
+      strokePolygonPixels(tctx, sampled, terrainColorRef.current);
+    }
     shapePointsRef.current = [];
     setShapePointCount(0);
     hoverPointRef.current = null;
@@ -2044,9 +2244,25 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   // Pointer
   // ────────────────────────────────────────────────────────────
   function pointFromEvent(canvas: HTMLCanvasElement, event: React.PointerEvent<HTMLCanvasElement>) {
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.round(((event.clientX - rect.left) / rect.width) * CANVAS_WIDTH);
-    const y = Math.round(((event.clientY - rect.top) / rect.height) * CANVAS_HEIGHT);
+    const stage = stageRef.current;
+    const baseWidth = canvas.clientWidth;
+    const baseHeight = canvas.clientHeight;
+
+    if (!stage || baseWidth === 0 || baseHeight === 0) {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.round(((event.clientX - rect.left) / rect.width) * CANVAS_WIDTH);
+      const y = Math.round(((event.clientY - rect.top) / rect.height) * CANVAS_HEIGHT);
+      return {
+        x: Math.max(0, Math.min(CANVAS_WIDTH - 1, x)),
+        y: Math.max(0, Math.min(CANVAS_HEIGHT - 1, y)),
+      };
+    }
+
+    const stageRect = stage.getBoundingClientRect();
+    const localX = (event.clientX - (stageRect.left + stageRect.width / 2) - panRef.current.x) / zoomRef.current + baseWidth / 2;
+    const localY = (event.clientY - (stageRect.top + stageRect.height / 2) - panRef.current.y) / zoomRef.current + baseHeight / 2;
+    const x = Math.round((localX / baseWidth) * CANVAS_WIDTH);
+    const y = Math.round((localY / baseHeight) * CANVAS_HEIGHT);
     return {
       x: Math.max(0, Math.min(CANVAS_WIDTH - 1, x)),
       y: Math.max(0, Math.min(CANVAS_HEIGHT - 1, y)),
@@ -2352,7 +2568,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       if (tool === 'terrainLine') {
         drawSegment(tctx, session.start, point, brushSizeRef.current, terrainColorRef.current);
       } else {
-        drawRect(tctx, session.start, point, terrainColorRef.current);
+        drawRect(tctx, session.start, point, terrainColorRef.current, terrainRectFilled);
       }
       session.dirty = true;
       sceneDirtyRef.current = true;
@@ -2490,7 +2706,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   }
 
   function handleStagePointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (!showsUnitControls || !stageRef.current) {
+    if (!showFloatingControls || floatingControlItems.length === 0 || !stageRef.current) {
       if (dockUnitHelpRight) {
         setDockUnitHelpRight(false);
       }
@@ -2548,14 +2764,20 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
   const unitTools = TOOLS.filter((t) => t.group === 'units');
   const objectTools = TOOLS.filter((t) => t.group === 'objects');
   const orderedTeams = visibleTeamOrder(teamCount);
-  const showsBrushSize = isBrushSizedTool(selectedTool);
-  const showsUnitControls = isMoveEntityTool(selectedTool) || selectedTool === 'select';
   const selectedUnitCount = selectedEntities.filter((entity) => entity.kind === 'infantry' || entity.kind === 'tank').length;
+  const liveTeamSummaries = useMemo(
+    () => createTeamMapSummaries(draft, teamCount).filter((summary) => formatTeamMapSummary(summary).length > 0),
+    [draft, teamCount],
+  );
   const stageContext = useMemo(() => {
     const parts = [TOOL_LOOKUP[selectedTool].hint];
 
-    if (showsBrushSize) {
+    if (selectedTool === 'terrainBrush') {
       parts.push(`Brush ${brushSize}px.`);
+    }
+
+    if (selectedTool === 'terrainLine') {
+      parts.push(`Line thickness ${brushSize}px.`);
     }
 
     if (selectedTool === 'terrainShape') {
@@ -2580,30 +2802,86 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
       parts.push('Click or right-click removes the nearest object.');
     } else if (selectedTool === 'bridge') {
       parts.push('Click two points to place a bridge.');
+    } else if (selectedTool === 'terrainRect') {
+      parts.push(terrainRectFilled ? 'Rectangles are filled when placed.' : 'Rectangles place borders only.');
+    } else if (selectedTool === 'terrainShape') {
+      parts.push(terrainShapeFilled ? 'Shapes are filled when confirmed.' : 'Shapes place borders only when confirmed.');
     }
 
     return parts.join(' ');
-  }, [brushSize, selectedEntities.length, selectedTool, shapePointCount, showsBrushSize]);
-  const unitControlItems = useMemo<ControlHint[]>(() => {
-    if (!showsUnitControls) {
-      return [];
+  }, [brushSize, selectedEntities.length, selectedTool, shapePointCount, terrainRectFilled, terrainShapeFilled]);
+  const selectedTerrainOptions = useMemo(() => {
+    if (TOOL_LOOKUP[selectedTool].group !== 'terrain') {
+      return null;
     }
 
-    if (selectedTool === 'select') {
-      return [
-        { id: 'select-drag', icon: MousePointer2, label: 'Left drag', action: 'draws a selection box.', keys: ['LMB'] },
-        { id: 'select-add', icon: Mouse, label: 'Shift + drag', action: 'adds the new box to the selection.', keys: ['Shift', 'LMB'] },
-        { id: 'select-move', icon: MousePointer2, label: 'Drag inside box', action: 'moves the selected units and cities.', keys: ['LMB'] },
-        { id: 'select-carve', icon: Mouse, label: 'Ctrl + drag', action: 'carves that box out of the selection.', keys: ['Ctrl', 'LMB'] },
-      ];
+    if (selectedTool === 'terrainBrush') {
+      return (
+        <div className="brush-strip">
+          <div className="brush-head">
+            <span>Brush size</span>
+            <strong>{brushSize}px</strong>
+          </div>
+          <input
+            aria-label="Brush size"
+            max={120}
+            min={1}
+            type="range"
+            value={brushSize}
+            onChange={(e) => setBrushSize(Number(e.target.value))}
+          />
+        </div>
+      );
     }
 
-    return [
-      { id: 'unit-place', icon: MousePointer2, label: 'Left click', action: 'places the selected unit.', keys: ['LMB'] },
-      { id: 'unit-drag', icon: MousePointer2, label: 'Left drag', action: 'moves a placed unit or city.', keys: ['LMB'] },
-      { id: 'unit-brush', icon: Mouse, label: 'Shift + left drag', action: 'brushes replacements to the selected tool.', keys: ['Shift', 'LMB'] },
-    ];
-  }, [selectedTool, showsUnitControls]);
+    if (selectedTool === 'terrainLine') {
+      return (
+        <div className="brush-strip">
+          <div className="brush-head">
+            <span>Line thickness</span>
+            <strong>{brushSize}px</strong>
+          </div>
+          <input
+            aria-label="Line thickness"
+            max={120}
+            min={1}
+            type="range"
+            value={brushSize}
+            onChange={(e) => setBrushSize(Number(e.target.value))}
+          />
+        </div>
+      );
+    }
+
+    if (selectedTool === 'terrainRect') {
+      return (
+        <label className="terrain-option-toggle">
+          <input
+            checked={terrainRectFilled}
+            type="checkbox"
+            onChange={(event) => setTerrainRectFilled(event.target.checked)}
+          />
+          <span>Fill rectangle instead of placing only the border</span>
+        </label>
+      );
+    }
+
+    if (selectedTool === 'terrainShape') {
+      return (
+        <label className="terrain-option-toggle">
+          <input
+            checked={terrainShapeFilled}
+            type="checkbox"
+            onChange={(event) => setTerrainShapeFilled(event.target.checked)}
+          />
+          <span>Fill shape instead of placing only the border</span>
+        </label>
+      );
+    }
+
+    return <p className="tool-note">This terrain tool has no extra options.</p>;
+  }, [brushSize, selectedTool, terrainRectFilled, terrainShapeFilled]);
+  const floatingControlItems = useMemo<ControlHint[]>(() => floatingControlItemsForTool(selectedTool), [selectedTool]);
   const helpItems = useMemo<ControlHint[]>(() => {
     const items: ControlHint[] = [
       { id: 'zoom', icon: ZoomIn, label: 'Wheel', action: 'Zoom into the area under the cursor.' },
@@ -2795,20 +3073,7 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
                 ))}
               </div>
 
-              <div className="brush-strip">
-                <div className="brush-head">
-                  <span>Brush</span>
-                  <strong>{brushSize}px</strong>
-                </div>
-                <input
-                  aria-label="Brush size"
-                  max={120}
-                  min={1}
-                  type="range"
-                  value={brushSize}
-                  onChange={(e) => setBrushSize(Number(e.target.value))}
-                />
-              </div>
+              {selectedTerrainOptions}
 
               <div className="swatch-grid">
                 {TERRAIN_COLORS.map((entry) => (
@@ -2919,9 +3184,9 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
         </div>
 
         <div className="stage-frame" ref={stageRef} onPointerLeave={handleStagePointerLeave} onPointerMove={handleStagePointerMove}>
-          {showsUnitControls ? (
-            <div className={`stage-floating-help ${dockUnitHelpRight ? 'dock-right' : 'dock-left'}`} role="note">
-              {unitControlItems.map((item) => (
+          {floatingControlItems.length > 0 ? (
+            <div className={`stage-floating-help ${dockUnitHelpRight ? 'dock-right' : 'dock-left'} ${showFloatingControls ? 'is-visible' : 'is-hidden'}`} role="note">
+              {floatingControlItems.map((item) => (
                 <div key={item.id} className="help-row stage-floating-help-row">
                   <span className="help-row-glyph"><ControlGlyph icon={item.icon} /></span>
                   <div className="help-row-copy">
@@ -2961,6 +3226,25 @@ export function EditorScreen({ initialMap, saveMap, onClose }: EditorScreenProps
             />
             {!ready && <div className="canvas-loading"><span className="loading-pulse" /></div>}
           </div>
+          {liveTeamSummaries.length > 0 ? (
+            <div className="stage-map-live-summary" role="status" aria-live="polite" aria-label="Live team map summary">
+              {liveTeamSummaries.map((summary) => {
+                const teamColor = teamColorForIndex(summary.teamIndex, teamCount);
+                const line = formatTeamMapSummary(summary);
+
+                return (
+                  <p
+                    key={`${teamColor}-${summary.teamIndex}`}
+                    className="stage-map-live-summary-line"
+                    style={{ '--team-summary-accent': teamAccent(summary.teamIndex, teamCount) } as CSSProperties}
+                    title={`${TEAM_LABELS[teamColor]}: ${line}`}
+                  >
+                    {line}
+                  </p>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
       </div>
     </section>

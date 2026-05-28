@@ -164,13 +164,29 @@ export function drawRect(
   start: { x: number; y: number },
   end: { x: number; y: number },
   color: string,
+  filled = true,
 ) {
-  context.fillStyle = color;
   const x = Math.min(Math.round(start.x), Math.round(end.x));
   const y = Math.min(Math.round(start.y), Math.round(end.y));
   const width = Math.abs(Math.round(end.x) - Math.round(start.x)) + 1;
   const height = Math.abs(Math.round(end.y) - Math.round(start.y)) + 1;
-  context.fillRect(x, y, width, height);
+
+  context.fillStyle = color;
+
+  if (filled) {
+    context.fillRect(x, y, width, height);
+    return;
+  }
+
+  for (let currentX = x; currentX < x + width; currentX += 1) {
+    context.fillRect(currentX, y, 1, 1);
+    context.fillRect(currentX, y + height - 1, 1, 1);
+  }
+
+  for (let currentY = y; currentY < y + height; currentY += 1) {
+    context.fillRect(x, currentY, 1, 1);
+    context.fillRect(x + width - 1, currentY, 1, 1);
+  }
 }
 
 function cubicAt(start: number, controlA: number, controlB: number, end: number, t: number) {
@@ -250,6 +266,24 @@ export function fillPolygonPixels(context: CanvasRenderingContext2D, points: Poi
         context.fillRect(x1, y, x2 - x1 + 1, 1);
       }
     }
+  }
+}
+
+export function strokePolygonPixels(context: CanvasRenderingContext2D, points: Point[], color: string, size = 1) {
+  if (points.length < 2) {
+    return;
+  }
+
+  for (let index = 0; index < points.length; index += 1) {
+    const start = points[index];
+    const end = points[(index + 1) % points.length];
+    drawSegment(
+      context,
+      { x: start[0], y: start[1] },
+      { x: end[0], y: end[1] },
+      size,
+      color,
+    );
   }
 }
 

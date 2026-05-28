@@ -722,6 +722,27 @@ body[data-screen='library'] .app-main {
 }
 .brush-strip small { color: var(--muted); font-size: 0.72rem; }
 
+.terrain-option-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius-xs);
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.terrain-option-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent-strong);
+}
+
 .swatch-grid {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
 }
@@ -1057,7 +1078,9 @@ body[data-screen='library'] .app-main {
   display: grid;
   gap: 6px;
   pointer-events: none;
-  transition: left 140ms ease, right 140ms ease, opacity 120ms ease;
+  opacity: 1;
+  transform: translateY(0);
+  transition: left 140ms ease, right 140ms ease, opacity 180ms ease, transform 180ms ease;
 }
 
 .stage-floating-help.dock-left {
@@ -1068,6 +1091,11 @@ body[data-screen='library'] .app-main {
 .stage-floating-help.dock-right {
   left: auto;
   right: 14px;
+}
+
+.stage-floating-help.is-hidden {
+  opacity: 0;
+  transform: translateY(-8px);
 }
 
 .stage-floating-help-row {
@@ -1162,6 +1190,34 @@ body[data-screen='library'] .app-main {
   pointer-events: none;
 }
 
+.stage-map-live-summary {
+  position: absolute;
+  right: 22px;
+  bottom: 18px;
+  z-index: 3;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  max-width: min(460px, calc(100% - 44px));
+  pointer-events: none;
+}
+
+.stage-map-live-summary-line {
+  margin: 0;
+  padding: 7px 11px;
+  border-radius: 999px;
+  color: var(--team-summary-accent);
+  background: rgba(8, 13, 17, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.28);
+  backdrop-filter: blur(14px);
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: right;
+  text-wrap: balance;
+}
+
 /* ─────────────────────────────────────────────
    Animations
    ───────────────────────────────────────────── */
@@ -1188,6 +1244,11 @@ body[data-screen='library'] .app-main {
     grid-template-rows: auto 1fr;
   }
   .editor-sidebar { max-height: 40vh; }
+  .stage-map-live-summary {
+    right: 14px;
+    bottom: 14px;
+    max-width: min(420px, calc(100% - 28px));
+  }
 }
 
 @media (max-width: 760px) {
